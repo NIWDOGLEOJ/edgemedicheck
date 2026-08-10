@@ -1,0 +1,32 @@
+{
+  "damage": {
+    "n": 125,
+    "correct": 112,
+    "recall": 0.896
+  },
+  "recapture": {
+    "n": 126,
+    "correct": 101,
+    "recall": 0.8015873015873016
+  },
+  "relabel": {
+    "n": 113,
+    "correct": 113,
+    "recall": 1.0
+  },
+  "reprint": {
+    "n": 116,
+    "correct": 116,
+    "recall": 1.0
+  },
+  "substrate": {
+    "n": 120,
+    "correct": 116,
+    "recall": 0.9666666666666667
+  },
+  "genuine": {
+    "n": 600,
+    "correct": 576,
+    "recall": 0.96
+  }
+}

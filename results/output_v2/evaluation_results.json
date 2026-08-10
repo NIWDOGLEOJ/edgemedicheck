@@ -1,0 +1,32 @@
+{
+    "test_accuracy": 0.945,
+    "test_precision": 0.9320388349514563,
+    "test_recall": 0.96,
+    "test_f1_score": 0.9458128078817734,
+    "test_roc_auc": 0.9820027777777778,
+    "test_fake_recall": 0.93,
+    "test_false_positive_rate_genuine": 0.04,
+    "confusion_matrix": [
+        [
+            558,
+            42
+        ],
+        [
+            24,
+            576
+        ]
+    ],
+    "class_names": [
+        "Fake",
+        "Real"
+    ],
+    "best_epoch": 15,
+    "best_val_loss": 0.14909269426764088,
+    "ood_probe": {
+        "n": 247,
+        "flagged_fake": 18,
+        "recall_on_falsified": 0.0728744939271255,
+        "mean_p_fake": 0.10186107019088285,
+        "source": "WHO Medical Product Alerts (falsified only)"
+    }
+}

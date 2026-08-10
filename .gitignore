@@ -1,0 +1,35 @@
+# Regenerable image data — see README for the commands
+pool/
+dataset/
+dataset_norm/
+dataset_v2/
+dataset_v2_split/
+probe/
+edgemedicheck/data/captures/
+edgemedicheck/data/calib/
+edgemedicheck/data/images/
+edgemedicheck/data/holdout/
+edgemedicheck/data/testset/
+edgemedicheck/data/reference/
+edgemedicheck/data/ref2/
+edgemedicheck/data/collected/
+
+# Environments and caches
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Scratch databases
+*.sqlite3-journal
+t.sqlite3
+
+# macOS
+.DS_Store
+
+# Trained model — 134 MB, over GitHub's 100 MB file limit.
+# Distributed via Google Drive; see README.
+*.pth
+
+# Manuscripts kept out of the public repo
+papers/

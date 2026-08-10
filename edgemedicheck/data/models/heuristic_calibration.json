@@ -1,0 +1,136 @@
+{
+  "version": 2,
+  "global": {
+    "medians": {
+      "edge_energy": 1976.667493871265,
+      "high_freq_ratio": 0.4886566964715136,
+      "mean_saturation": 0.08527587530077055,
+      "saturation_spread": 0.20139993595783895,
+      "colour_balance": 0.015902630984783173,
+      "text_angle_spread": 1.877157561918414,
+      "specular_hue_variance": 689.0493774414062,
+      "specular_area": 0.7900087902232014,
+      "block_texture_spread": 31.046392094823354
+    },
+    "scales": {
+      "edge_energy": 256.05310556026944,
+      "high_freq_ratio": 0.010019654311393593,
+      "mean_saturation": 0.01701917151125114,
+      "saturation_spread": 0.02498796219660414,
+      "colour_balance": 0.008172447532229125,
+      "text_angle_spread": 1.0698616349794234,
+      "specular_hue_variance": 209.37535279541015,
+      "specular_area": 0.04724514058581823,
+      "block_texture_spread": 2.0596321723900752
+    },
+    "n_samples": 72,
+    "source": "data/ref2"
+  },
+  "global_is_pooled": true,
+  "groups": {
+    "AZITHRAL": {
+      "medians": {
+        "edge_energy": 2041.9958047691316,
+        "high_freq_ratio": 0.48992528695051585,
+        "mean_saturation": 0.08933767603614684,
+        "saturation_spread": 0.21465971461235872,
+        "colour_balance": 0.010318025946617126,
+        "text_angle_spread": 2.081993852966464,
+        "specular_hue_variance": 744.7425231933594,
+        "specular_area": 0.795247896807321,
+        "block_texture_spread": 31.59293952823795
+      },
+      "scales": {
+        "edge_energy": 128.98928252760163,
+        "high_freq_ratio": 0.009798505739010317,
+        "mean_saturation": 0.015608070643428283,
+        "saturation_spread": 0.024814501602082737,
+        "colour_balance": 0.004086223766114562,
+        "text_angle_spread": 0.9164765422762328,
+        "specular_hue_variance": 175.5438125427246,
+        "specular_area": 0.0386120853349709,
+        "block_texture_spread": 1.3313044802219838
+      },
+      "n_samples": 18,
+      "source": "data/ref2/AZITHRAL"
+    },
+    "DOLO": {
+      "medians": {
+        "edge_energy": 1968.2122435855308,
+        "high_freq_ratio": 0.48912648565895434,
+        "mean_saturation": 0.08881984096755105,
+        "saturation_spread": 0.21093647978833643,
+        "colour_balance": 0.02599774580448866,
+        "text_angle_spread": 2.3431331830735163,
+        "specular_hue_variance": 739.3583068847656,
+        "specular_area": 0.8133127025374345,
+        "block_texture_spread": 31.378636559182844
+      },
+      "scales": {
+        "edge_energy": 172.45646375291244,
+        "high_freq_ratio": 0.009782529713179087,
+        "mean_saturation": 0.00850958575562557,
+        "saturation_spread": 0.01413887988309555,
+        "colour_balance": 0.004086223766114562,
+        "text_angle_spread": 1.1685534667830935,
+        "specular_hue_variance": 104.68767639770508,
+        "specular_area": 0.023622570292909116,
+        "block_texture_spread": 1.3813058747578326
+      },
+      "n_samples": 18,
+      "source": "data/ref2/DOLO"
+    },
+    "METFOR": {
+      "medians": {
+        "edge_energy": 363.4964974032779,
+        "high_freq_ratio": 0.3960522990782841,
+        "mean_saturation": 0.047548387359907573,
+        "saturation_spread": 0.07182932815882187,
+        "colour_balance": 0.016310447826981544,
+        "text_angle_spread": 1.0062587879936138,
+        "specular_hue_variance": 32.24979209899902,
+        "specular_area": 0.3470914339648764,
+        "block_texture_spread": 15.060754340848785
+      },
+      "scales": {
+        "edge_energy": 128.02655278013472,
+        "high_freq_ratio": 0.007921045981565683,
+        "mean_saturation": 0.00850958575562557,
+        "saturation_spread": 0.01249398109830207,
+        "colour_balance": 0.004086223766114562,
+        "text_angle_spread": 0.5349308174897117,
+        "specular_hue_variance": 104.68767639770508,
+        "specular_area": 0.0711499465791937,
+        "block_texture_spread": 1.0298160861950376
+      },
+      "n_samples": 18,
+      "source": "data/ref2/METFOR"
+    },
+    "PARACIP": {
+      "medians": {
+        "edge_energy": 2121.843473179104,
+        "high_freq_ratio": 0.4909961314543606,
+        "mean_saturation": 0.08700295225133259,
+        "saturation_spread": 0.2096457103462775,
+        "colour_balance": 0.00997829856351018,
+        "text_angle_spread": 2.523071653070625,
+        "specular_hue_variance": 825.8580322265625,
+        "specular_area": 0.79641481761232,
+        "block_texture_spread": 32.15167430089552
+      },
+      "scales": {
+        "edge_energy": 173.20655702003705,
+        "high_freq_ratio": 0.009819922629087213,
+        "mean_saturation": 0.009349981092900021,
+        "saturation_spread": 0.017654568364937704,
+        "colour_balance": 0.005291556021943688,
+        "text_angle_spread": 0.9195896551815385,
+        "specular_hue_variance": 129.69546628417967,
+        "specular_area": 0.024237628346443125,
+        "block_texture_spread": 1.0298160861950376
+      },
+      "n_samples": 18,
+      "source": "data/ref2/PARACIP"
+    }
+  }
+}

@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EdgeMediCheck — Pharmacy Counter Scanner</title>
+<style>
+  /* Self-contained: no external fonts, CSS, or scripts. The device is
+     designed to work with no internet connection. */
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --ink: #1b1f24;
+    --muted: #6a737d;
+    --line: #d8dce1;
+    --green: #1a7f37;
+    --yellow: #bf8700;
+    --red: #cf222e;
+    --blue: #0a5ad6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px; line-height: 1.5;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 14px 20px; display: flex; align-items: center;
+    justify-content: space-between; flex-wrap: wrap; gap: 10px;
+  }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    font-size: 12px; padding: 4px 10px; border-radius: 20px;
+    background: #eef1f4; color: var(--muted); border: 1px solid var(--line);
+  }
+  .chip.warn { background: #fff6e0; color: #7a5300; border-color: #f0d79a; }
+  .chip.ok   { background: #e6f4ea; color: #145c2c; border-color: #a9d9ba; }
+
+  main { max-width: 1080px; margin: 0 auto; padding: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px;
+  }
+  .panel h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 0 0 14px;
+  }
+
+  button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    border-radius: 8px; border: 1px solid transparent; padding: 14px 20px;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: var(--blue); color: #fff; width: 100%; font-size: 18px; }
+  .btn-secondary {
+    background: #fff; color: var(--ink); border-color: var(--line); width: 100%;
+  }
+  .actions { display: flex; flex-direction: column; gap: 10px; }
+
+  /* Verdict banner: large, colour-coded, readable across a counter. */
+  #verdict { display: none; }
+  #verdict.show { display: block; }
+  .banner {
+    border-radius: 10px; padding: 22px; color: #fff; margin-bottom: 16px;
+  }
+  .banner .headline { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+  .banner .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; opacity: 0.9; margin-top: 4px;
+  }
+  .banner .reason { margin-top: 10px; font-size: 16px; }
+  .banner .advice {
+    margin-top: 12px; padding-top: 12px; font-size: 14px;
+    border-top: 1px solid rgba(255,255,255,0.35);
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; width: 42%; }
+  td.missing { color: var(--muted); font-style: italic; }
+
+  .findings { list-style: none; padding: 0; margin: 14px 0 0; }
+  .findings li {
+    padding: 9px 12px; border-radius: 7px; margin-bottom: 7px; font-size: 14px;
+    border-left: 4px solid var(--line); background: #f7f8fa;
+  }
+  .findings li.red    { border-left-color: var(--red); }
+  .findings li.yellow { border-left-color: var(--yellow); }
+  .findings li.info   { border-left-color: var(--blue); }
+  .findings li .fcode {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px; color: var(--muted); display: block;
+  }
+
+  #preview img { width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+  .history-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid var(--line); font-size: 13px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .history-row .grow { flex: 1; min-width: 0; }
+  .history-row .batch {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .history-row .when { color: var(--muted); font-size: 12px; }
+
+  td .src {
+    display: block; font-size: 11px; color: var(--muted);
+  }
+  .btn-link {
+    background: none; border: none; padding: 8px 0; color: var(--blue);
+    font-size: 13px; font-weight: 500; text-decoration: underline;
+    width: auto;
+  }
+  #feedback-block { margin-top: 8px; border-top: 1px solid var(--line); }
+  .feedback { padding: 4px 0 10px; }
+  .feedback-q { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .feedback-opts { display: flex; flex-direction: column; gap: 6px; }
+  .feedback-opts .opt {
+    background: #f7f8fa; border: 1px solid var(--line); color: var(--ink);
+    font-size: 14px; font-weight: 500; padding: 10px 12px; text-align: left;
+  }
+  .feedback-opts .opt:hover { background: #eef1f4; }
+  #feedback-comment {
+    width: 100%; margin-top: 10px; padding: 8px; font: inherit; font-size: 13px;
+    border: 1px solid var(--line); border-radius: 7px; resize: vertical;
+  }
+  .feedback-actions { margin-top: 4px; }
+  .feedback-done {
+    background: #e6f4ea; border: 1px solid #a9d9ba; color: #145c2c;
+    border-radius: 7px; padding: 10px 12px; font-size: 13px; margin: 10px 0;
+  }
+  .notice {
+    background: #fff6e0; border: 1px solid #f0d79a; color: #7a5300;
+    border-radius: 8px; padding: 12px; font-size: 13px; margin-bottom: 16px;
+  }
+  .disclaimer {
+    color: var(--muted); font-size: 12px; text-align: center;
+    margin: 26px 0 10px; padding: 0 20px;
+  }
+  .spinner {
+    display: inline-block; width: 15px; height: 15px; vertical-align: -2px;
+    border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>EdgeMediCheck</h1>
+    <div class="sub">Offline medicine authenticity and expiry verification</div>
+  </div>
+  <div class="chips">
+    <span class="chip">{{ product_count }} batch records</span>
+    <span class="chip">{{ scan_count }} scans logged</span>
+    {% if visual_ready %}
+      <span class="chip ok">Visual check: {{ backend }}{% if calibration_groups %} ({{ calibration_groups }} products){% endif %}</span>
+    {% else %}
+      <span class="chip warn">Visual check inactive</span>
+    {% endif %}
+  </div>
+</header>
+
+<main>
+  {% if not visual_ready %}
+  <div class="notice">
+    <strong>Visual authentication is not active.</strong>
+    No trained CNN model and no reference calibration were found, so the
+    scanner is checking printed details and batch records only. Package
+    appearance is not being assessed. Run
+    <code>python run.py calibrate &lt;folder&gt;</code> with reference images of
+    known-genuine stock, or train and deploy the CNN, to enable it.
+  </div>
+  {% endif %}
+
+  <div class="grid">
+    <!-- Left: controls and preview -->
+    <section>
+      <div class="panel">
+        <h2>Scan a package</h2>
+        <div class="actions">
+          <button id="btn-scan" class="btn-primary">
+            <span id="scan-spinner" class="spinner hidden"></span>
+            <span id="scan-label">Start scan</span>
+          </button>
+          <!-- `capture="environment"` opens the rear camera directly on a
+               phone or tablet, which is how staff use this over the LAN. -->
+          <button id="btn-camera" class="btn-secondary hidden">
+            Take a photo with this device
+          </button>
+          <button id="btn-upload" class="btn-secondary">Upload an image instead</button>
+          <input id="file-input" type="file" accept="image/*" class="hidden">
+          <input id="camera-input" type="file" accept="image/*"
+                 capture="environment" class="hidden">
+        </div>
+        <div class="meta" id="capture-hint">
+          Place the medicine strip or carton inside the scanner enclosure, then
+          press Start scan.
+        </div>
+      </div>
+
+      <div class="panel" id="preview" style="margin-top:20px; display:none;">
+        <h2>Captured image</h2>
+        <img id="preview-img" alt="Captured medicine package">
+        <div class="meta" id="preview-meta"></div>
+      </div>
+
+      <div class="panel" style="margin-top:20px;">
+        <h2>Recent scans</h2>
+        <div id="history"><div class="meta">No scans yet.</div></div>
+      </div>
+    </section>
+
+    <!-- Right: result -->
+    <section>
+      <div id="verdict">
+        <div class="banner" id="banner">
+          <div class="headline" id="headline"></div>
+          <div class="code" id="reason-code"></div>
+          <div class="reason" id="reason-text"></div>
+          <div class="advice" id="advice"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Details read from the package</h2>
+          <table id="fields"></table>
+          <ul class="findings" id="findings"></ul>
+          <div class="meta" id="timing"></div>
+
+          <!-- Corrections become labelled training data. See
+               `run.py feedback --export`. -->
+          <div id="feedback-block">
+            <button id="btn-wrong" class="btn-link">
+              This verdict looks wrong
+            </button>
+            <div id="feedback-form" class="feedback hidden">
+              <div class="feedback-q">What should it have been?</div>
+              <div class="feedback-opts">
+                <button class="opt" data-verdict="green"  data-label="genuine">Genuine, safe to dispense</button>
+                <button class="opt" data-verdict="red"    data-label="expired">Expired</button>
+                <button class="opt" data-verdict="red"    data-label="suspicious">Counterfeit or suspicious</button>
+                <button class="opt" data-verdict="yellow" data-label="">Needed manual checking</button>
+              </div>
+              <textarea id="feedback-comment" rows="2"
+                        placeholder="Anything else worth noting (optional)"></textarea>
+              <div class="feedback-actions">
+                <button id="btn-feedback-cancel" class="btn-link">Cancel</button>
+              </div>
+            </div>
+            <div id="feedback-done" class="feedback-done hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="placeholder">
+        <h2>Result</h2>
+        <div class="meta">Scan a package to see the verification result here.</div>
+      </div>
+    </section>
+  </div>
+
+  <p class="disclaimer">
+    EdgeMediCheck is a decision-support screening aid. It does not perform
+    chemical testing and is not a regulatory or legal authentication authority.
+    Always follow pharmacy policy and manufacturer guidance.
+  </p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var COLOURS = { green: "#1a7f37", yellow: "#bf8700", red: "#cf222e" };
+
+  var btnScan     = document.getElementById("btn-scan");
+  var btnUpload   = document.getElementById("btn-upload");
+  var btnCamera   = document.getElementById("btn-camera");
+  var fileInput   = document.getElementById("file-input");
+  var cameraInput = document.getElementById("camera-input");
+  var spinner     = document.getElementById("scan-spinner");
+  var scanLabel   = document.getElementById("scan-label");
+
+  // On a phone or tablet reaching the scanner over the pharmacy Wi-Fi, the
+  // enclosure camera is attached to the host, not to this device. Offer the
+  // device's own camera and lead with it.
+  var handheld = ("ontouchstart" in window) &&
+                 matchMedia("(pointer: coarse)").matches;
+
+  if (handheld) {
+    btnCamera.classList.remove("hidden");
+    btnCamera.className = "btn-primary";
+    btnScan.className = "btn-secondary";
+    btnScan.textContent = "Use the enclosure camera";
+    document.getElementById("capture-hint").textContent =
+      "Hold the package flat under even light and fill the frame with it.";
+  }
+
+  function busy(on, label) {
+    btnScan.disabled = on;
+    btnUpload.disabled = on;
+    btnCamera.disabled = on;
+    spinner.classList.toggle("hidden", !on);
+    if (!handheld) {
+      scanLabel.textContent = on ? (label || "Scanning...") : "Start scan";
+    }
+  }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function showError(message) {
+    document.getElementById("placeholder").style.display = "none";
+    var v = document.getElementById("verdict");
+    v.classList.add("show");
+    var banner = document.getElementById("banner");
+    banner.style.background = COLOURS.yellow;
+    document.getElementById("headline").textContent = "Scan could not complete";
+    document.getElementById("reason-code").textContent = "";
+    document.getElementById("reason-text").textContent = message;
+    document.getElementById("advice").textContent =
+      "Check the camera connection, or use Upload an image instead.";
+    document.getElementById("fields").innerHTML = "";
+    document.getElementById("findings").innerHTML = "";
+    document.getElementById("timing").textContent = "";
+  }
+
+  function render(data) {
+    document.getElementById("placeholder").style.display = "none";
+    document.getElementById("verdict").classList.add("show");
+
+    var v = data.verdict;
+    var banner = document.getElementById("banner");
+    banner.style.background = COLOURS[v.verdict] || COLOURS.yellow;
+
+    document.getElementById("headline").textContent = v.headline;
+    document.getElementById("reason-code").textContent = v.reason_code;
+    document.getElementById("reason-text").textContent = v.reason_text;
+    document.getElementById("advice").textContent = v.advice || "";
+
+    // Extracted fields
+    var rows = "";
+    (data.display.fields || []).forEach(function (f) {
+      var val = f.value
+        ? esc(f.value)
+        : '<span class="missing">not read</span>';
+      if (f.value && f.source) {
+        val += '<span class="src">from ' + esc(f.source) + "</span>";
+      }
+      rows += "<tr><th>" + esc(f.label) + "</th><td>" + val + "</td></tr>";
+    });
+    document.getElementById("fields").innerHTML = rows;
+
+    // Reset the correction control for this new scan.
+    lastScan = data;
+    document.getElementById("feedback-form").classList.add("hidden");
+    document.getElementById("feedback-done").classList.add("hidden");
+    document.getElementById("btn-wrong").classList.remove("hidden");
+    document.getElementById("feedback-comment").value = "";
+
+    // Findings
+    var items = "";
+    (v.findings || []).forEach(function (f) {
+      items += '<li class="' + esc(f.verdict) + '">' +
+               '<span class="fcode">' + esc(f.code) + "</span>" +
+               esc(f.text) + "</li>";
+    });
+    document.getElementById("findings").innerHTML = items;
+
+    // Timing + provenance
+    var vis = data.visual || {};
+    var visText = vis.usable === false
+      ? "visual check abstained"
+      : "visual score " + vis.suspicion_score +
+        " (" + vis.backend + (vis.model_backed ? "" : ", heuristic") + ")";
+    document.getElementById("timing").textContent =
+      data.total_ms + " ms  ·  OCR " + (data.ocr ? data.ocr.status : "?") +
+      "  ·  database " + (data.lookup ? data.lookup.status : "?") +
+      "  ·  " + visText;
+
+    // Preview
+    if (data.display.preview) {
+      document.getElementById("preview").style.display = "block";
+      document.getElementById("preview-img").src = data.display.preview;
+      var q = data.quality || {};
+      document.getElementById("preview-meta").textContent =
+        "sharpness " + q.sharpness + "  ·  brightness " + q.brightness +
+        "  ·  skew " + q.skew_angle + " deg";
+    }
+
+    loadHistory();
+  }
+
+  function handle(promise) {
+    promise
+      .then(function (res) {
+        return res.json().then(function (body) {
+          return { ok: res.ok, body: body };
+        });
+      })
+      .then(function (r) {
+        if (!r.ok) {
+          showError(r.body.message || "The scan failed.");
+        } else {
+          render(r.body);
+        }
+      })
+      .catch(function (err) { showError(String(err)); })
+      .then(function () { busy(false); });
+  }
+
+  btnScan.addEventListener("click", function () {
+    busy(true);
+    handle(fetch("/api/scan/live", { method: "POST" }));
+  });
+
+  btnUpload.addEventListener("click", function () { fileInput.click(); });
+  btnCamera.addEventListener("click", function () { cameraInput.click(); });
+
+  function submitFile(input) {
+    if (!input.files.length) return;
+    var form = new FormData();
+    form.append("image", input.files[0]);
+    busy(true, "Reading...");
+    handle(fetch("/api/scan/upload", { method: "POST", body: form }));
+    input.value = "";
+  }
+
+  fileInput.addEventListener("change", function () { submitFile(fileInput); });
+  cameraInput.addEventListener("change", function () { submitFile(cameraInput); });
+
+  // ---- Pharmacist corrections ---------------------------------------
+  var lastScan = null;
+
+  var btnWrong    = document.getElementById("btn-wrong");
+  var fbForm      = document.getElementById("feedback-form");
+  var fbDone      = document.getElementById("feedback-done");
+  var fbComment   = document.getElementById("feedback-comment");
+  var btnFbCancel = document.getElementById("btn-feedback-cancel");
+
+  btnWrong.addEventListener("click", function () {
+    fbForm.classList.remove("hidden");
+    btnWrong.classList.add("hidden");
+  });
+
+  btnFbCancel.addEventListener("click", function () {
+    fbForm.classList.add("hidden");
+    btnWrong.classList.remove("hidden");
+  });
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll(".feedback-opts .opt"),
+    function (btn) {
+      btn.addEventListener("click", function () {
+        if (!lastScan) return;
+        var payload = {
+          scan_id: lastScan.log_row_id || null,
+          batch_number: null,
+          correct_verdict: btn.getAttribute("data-verdict"),
+          correct_label: btn.getAttribute("data-label") || null,
+          comment: fbComment.value || null
+        };
+        // Send the batch we displayed so the server can refuse to annotate a
+        // different scan if one raced in between.
+        (lastScan.display.fields || []).forEach(function (f) {
+          if (f.label === "Batch number") payload.batch_number = f.value;
+        });
+
+        fbForm.classList.add("hidden");
+        fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            fbDone.textContent = d.ok
+              ? d.message
+              : (d.message || "Could not save that correction.");
+            fbDone.classList.remove("hidden");
+          })
+          .catch(function () {
+            fbDone.textContent = "Could not save that correction.";
+            fbDone.classList.remove("hidden");
+          });
+      });
+    }
+  );
+
+  function loadHistory() {
+    fetch("/api/history?limit=8")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var el = document.getElementById("history");
+        if (!d.scans || !d.scans.length) {
+          el.innerHTML = '<div class="meta">No scans yet.</div>';
+          return;
+        }
+        var html = "";
+        d.scans.forEach(function (s) {
+          var colour = COLOURS[s.verdict] || "#888";
+          html += '<div class="history-row">' +
+            '<span class="dot" style="background:' + colour + '"></span>' +
+            '<span class="grow"><span class="batch">' +
+              esc(s.batch_number || "—") + "</span> · " + esc(s.reason_code) +
+            "</span>" +
+            '<span class="when">' + esc((s.timestamp || "").replace("T", " ")) +
+            "</span></div>";
+        });
+        el.innerHTML = html;
+      })
+      .catch(function () { /* history is non-critical */ });
+  }
+
+  loadHistory();
+})();
+</script>
+</body>
+</html>
