@@ -74,9 +74,11 @@
 <div class="wrap">
   <div>
     <div class="stage">
-      <img id="preview" alt="camera preview">
+      <video id="cam" playsinline muted autoplay style="width:100%;display:none"></video>
+      <img id="preview" alt="camera preview" style="display:none">
       <div class="reticle"></div>
     </div>
+    <div id="srcnote" class="status" style="margin-top:.5rem"></div>
     <div class="controls">
       <button id="toggle" class="primary">Pause</button>
       <button id="once">Scan now</button>
@@ -141,14 +143,74 @@
   var fatal    = document.getElementById("fatal");
 
   var running = true, inFlight = false, timer = null;
+  var cam = document.getElementById("cam");
+  var srcnote = document.getElementById("srcnote");
+  var mode = null;              // "device" | "host"
+  var canvas = document.createElement("canvas");
 
-  // Cache-buster: without it the browser reuses one stream response and the
-  // preview freezes on a reconnect.
-  preview.src = "/api/stream.mjpg?t=" + Date.now();
-  preview.onerror = function () {
-    showFatal("Camera preview unavailable. Start the server with a working "
-            + "camera, or use --backend folder --folder <dir> to replay images.");
-  };
+  // Prefer the camera of whatever device is viewing this page, so a phone or
+  // laptop on the counter Wi-Fi is itself the scanner. That needs a secure
+  // context: over plain HTTP on a LAN address the browser does not even
+  // expose mediaDevices, so fall back to streaming the host's camera.
+  function startDeviceCamera() {
+    var secure = window.isSecureContext
+              && navigator.mediaDevices
+              && navigator.mediaDevices.getUserMedia;
+    if (!secure) {
+      return Promise.reject(new Error(
+        location.protocol === "https:"
+          ? "This browser did not expose a camera API."
+          : "Camera access needs HTTPS. Restart the server with --https, "
+          + "or keep using the host camera below."));
+    }
+    // facingMode is a hint, not a guarantee: laptops have only a front camera
+    // and ignore it, phones honour it and pick the rear lens.
+    return navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" },
+               width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    }).then(function (stream) {
+      cam.srcObject = stream;
+      cam.style.display = "block";
+      preview.style.display = "none";
+      mode = "device";
+      srcnote.textContent = "Using this device's camera.";
+    });
+  }
+
+  function startHostCamera() {
+    mode = "host";
+    preview.style.display = "block";
+    cam.style.display = "none";
+    // Cache-buster: without it the browser reuses one stream response and the
+    // preview freezes on a reconnect.
+    preview.src = "/api/stream.mjpg?t=" + Date.now();
+    preview.onerror = function () {
+      showFatal("No camera available. Grant camera permission on the machine "
+              + "running the server, or start it with "
+              + "--backend folder --folder <dir> to replay images.");
+    };
+  }
+
+  startDeviceCamera().catch(function (e) {
+    srcnote.textContent = (e && e.message ? e.message : String(e))
+                        + " Falling back to the server's camera.";
+    startHostCamera();
+  });
+
+  // A frame from whichever source is live, as a JPEG blob.
+  function grabFrame() {
+    return new Promise(function (resolve, reject) {
+      if (mode !== "device") return resolve(null);
+      var w = cam.videoWidth, h = cam.videoHeight;
+      if (!w || !h) return reject(new Error("camera still starting"));
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(cam, 0, 0, w, h);
+      canvas.toBlob(function (blob) {
+        blob ? resolve(blob) : reject(new Error("could not read a frame"));
+      }, "image/jpeg", 0.9);
+    });
+  }
 
   function showFatal(msg) {
     fatal.textContent = msg;
@@ -201,6 +263,19 @@
       : '<div class="row"><span class="k">none</span></div>';
   }
 
+  // Device frames are uploaded; the host camera is scanned server-side from
+  // the frame it already holds, so nothing travels twice.
+  function requestScan() {
+    if (mode !== "device") {
+      return fetch("/api/scan/frame", { method: "POST" });
+    }
+    return grabFrame().then(function (blob) {
+      var form = new FormData();
+      form.append("image", blob, "frame.jpg");
+      return fetch("/api/scan/upload", { method: "POST", body: form });
+    });
+  }
+
   function scanOnce() {
     if (inFlight) return;
     inFlight = true;
@@ -208,7 +283,7 @@
     statusEl.textContent = "scanning…";
     var t0 = performance.now();
 
-    fetch("/api/scan/frame", { method: "POST" })
+    requestScan()
       .then(function (r) {
         return r.json().then(function (body) { return { ok: r.ok, body: body }; });
       })

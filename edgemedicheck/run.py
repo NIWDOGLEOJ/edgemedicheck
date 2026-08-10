@@ -1065,11 +1065,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
         host = "0.0.0.0"
 
     ip = lan_ip()
-    lan_url = f"http://{ip}:{port}" if ip else None
+    scheme = "https" if args.https else "http"
+    lan_url = f"{scheme}://{ip}:{port}" if ip else None
 
     print()
     print(_c("  EdgeMediCheck", "bold"))
-    print(f"  This device      http://127.0.0.1:{port}")
+    print(f"  This device      {scheme}://127.0.0.1:{port}")
     if host == "0.0.0.0":
         if lan_url:
             print(f"  Other devices    {_c(lan_url, 'green')}")
@@ -1094,19 +1095,50 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     if host == "0.0.0.0":
         print()
-        print(_c(
-            "  Note: there is no login on this interface and traffic is plain "
-            "HTTP.\n"
-            "  Run it on a trusted pharmacy network only, never on public "
-            "Wi-Fi or a\n"
-            "  network reachable from the internet. Use --local-only to "
-            "restrict access\n"
-            "  to this machine.",
-            "yellow",
-        ))
+        if args.https:
+            print(_c(
+                "  Traffic is encrypted, but the certificate is self-signed, "
+                "so each\n"
+                "  device shows a warning once and you accept it deliberately. "
+                "There is\n"
+                "  still no login: run this on a trusted pharmacy network "
+                "only.",
+                "yellow",
+            ))
+        else:
+            print(_c(
+                "  Note: there is no login on this interface and traffic is "
+                "plain HTTP.\n"
+                "  Run it on a trusted pharmacy network only, never on public "
+                "Wi-Fi or a\n"
+                "  network reachable from the internet. Use --local-only to "
+                "restrict access\n"
+                "  to this machine.",
+                "yellow",
+            ))
+            print()
+            print(_c(
+                "  The live screen will fall back to this machine's camera. "
+                "Browsers only\n"
+                "  grant a page access to the *viewing device's* camera over "
+                "HTTPS, so to\n"
+                "  scan with a phone or laptop camera, restart with --https.",
+                "grey",
+            ))
     print()
 
-    app.run(host=host, port=port, debug=args.debug, threaded=True)
+    ssl_context = None
+    if args.https:
+        from edgemedicheck.tls import ensure_certificate
+
+        from edgemedicheck.config import DATA_DIR
+
+        cert, key = ensure_certificate(DATA_DIR / "certs",
+                                       hosts=[ip] if ip else [])
+        ssl_context = (str(cert), str(key))
+
+    app.run(host=host, port=port, debug=args.debug, threaded=True,
+            ssl_context=ssl_context)
     return 0
 
 
@@ -1230,6 +1262,12 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["auto", "picamera", "webcam", "folder"])
     p.add_argument("--folder", default=None,
                    help="image folder used by the folder backend / demo mode")
+    p.add_argument("--https", action="store_true",
+                   help="serve over TLS with a self-signed certificate. "
+                        "Required for the live screen to use the camera of "
+                        "the device viewing it: browsers refuse camera access "
+                        "to a page served over plain HTTP on a LAN address. "
+                        "Each device shows a certificate warning once.")
     p.set_defaults(func=cmd_serve)
 
     return ap
