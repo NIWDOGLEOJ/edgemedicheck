@@ -20,9 +20,14 @@ cryptography>=41.0.0
 
 # The Tesseract OCR *binary* is a separate, non-pip install:
 #   Debian / Ubuntu / Raspberry Pi OS : sudo apt install tesseract-ocr
+#   Arch / Manjaro / EndeavourOS      : sudo pacman -S tesseract tesseract-data-eng
 #   macOS                             : brew install tesseract
 #   Windows                           : https://github.com/UB-Mannheim/tesseract/wiki
 #                                       then set EMC_TESSERACT_CMD to tesseract.exe
+#
+# On Arch the language data is packaged separately from the engine, so
+# installing `tesseract` alone gives a binary that fails at run time with
+# "Failed loading language 'eng'". `tesseract-data-eng` is not optional there.
 
 # ---------------------------------------------------------------------------
 # Optional: extended barcode support
@@ -31,8 +36,10 @@ cryptography>=41.0.0
 # install. These add wider coverage:
 #
 #   pyzbar     : broader 1D symbologies.   apt install libzbar0
+#                                          pacman -S zbar
 #   pylibdmtx  : GS1 DataMatrix, the code most often used on pharmaceutical
 #                cartons.                  apt install libdmtx0b
+#                                          pacman -S libdmtx
 # ---------------------------------------------------------------------------
 # pyzbar>=0.1.9
 # pylibdmtx>=0.1.10

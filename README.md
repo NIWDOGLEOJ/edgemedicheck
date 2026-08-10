@@ -132,9 +132,20 @@ that shows it.
 cd edgemedicheck
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-brew install tesseract
 python run.py scan --live --backend webcam
 ```
+
+Tesseract is a separate, non-pip install:
+
+| platform | command |
+|---|---|
+| Debian / Ubuntu / Raspberry Pi OS | `sudo apt install tesseract-ocr` |
+| Arch / Manjaro / EndeavourOS | `sudo pacman -S tesseract tesseract-data-eng` |
+| macOS | `brew install tesseract` |
+
+On Arch the language data is packaged apart from the engine, so installing
+`tesseract` alone yields a binary that fails at run time with *"Failed loading
+language 'eng'"*. `tesseract-data-eng` is required, not optional.
 
 Grant camera access under System Settings → Privacy & Security → Camera.
 Without it OpenCV returns black frames rather than an error, which looks like
