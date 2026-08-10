@@ -30,14 +30,29 @@ EdgeMediCheck/
 
 ## The trained model
 
-The checkpoint is 134 MB, over GitHub's 100 MB per-file limit, so it is attached
-to a release rather than committed:
+The checkpoint is 134 MB, over GitHub's 100 MB per-file limit, so it is hosted
+outside the repository.
 
-**[Download best_counterfeit_model.pth](https://github.com/NIWDOGLEOJ/edgemedicheck/releases/download/v1.0/best_counterfeit_model.pth)** (134 MB, [release notes](https://github.com/NIWDOGLEOJ/edgemedicheck/releases/tag/v1.0))
+**[Download from Google Drive](https://drive.google.com/file/d/1eux3KkYOu3W5ArL9ZaMqA0MiDmRMzG_o/view?usp=sharing)** · [GitHub release mirror](https://github.com/NIWDOGLEOJ/edgemedicheck/releases/tag/v1.0)
+
+From the command line, use the `drive.usercontent.google.com` endpoint:
 
 ```bash
 curl -L -o results/output_v2/best_counterfeit_model.pth \
-  https://github.com/NIWDOGLEOJ/edgemedicheck/releases/download/v1.0/best_counterfeit_model.pth
+  "https://drive.usercontent.google.com/download?id=1eux3KkYOu3W5ArL9ZaMqA0MiDmRMzG_o&export=download&confirm=t"
+```
+
+The plain `drive.google.com/uc?export=download` form does **not** work for this
+file. Drive cannot virus-scan anything over 100 MB, so it serves a 2 KB HTML
+warning page instead of the model. Saved under a `.pth` name that fails later
+inside `torch.load` with an unrelated-looking error. The `confirm=t` URL above
+skips the interstitial and returns the real file.
+
+Verify the download:
+
+```bash
+shasum -a 256 results/output_v2/best_counterfeit_model.pth
+# 3a3977ada293a74dec902a731e7d00e66c6b33626ff97b1d9fbcc10378678c15
 ```
 
 Class order is `['Fake', 'Real']`, so `P(fake) = softmax(logits)[0]`.
