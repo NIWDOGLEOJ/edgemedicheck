@@ -12,6 +12,11 @@ numpy>=1.24.0
 Pillow>=10.0.0
 pytesseract>=0.3.10
 Flask>=3.0.0
+# Needed by `run.py serve --https`, which issues the self-signed certificate
+# that lets the live screen use the camera of the device viewing it. Browsers
+# refuse camera access to a page served over plain HTTP on a LAN address, so
+# without this the live screen falls back to the server's own camera.
+cryptography>=41.0.0
 
 # The Tesseract OCR *binary* is a separate, non-pip install:
 #   Debian / Ubuntu / Raspberry Pi OS : sudo apt install tesseract-ocr
