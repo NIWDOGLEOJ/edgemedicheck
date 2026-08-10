@@ -30,10 +30,17 @@ EdgeMediCheck/
 
 ## The trained model
 
-The checkpoint is 134 MB, over GitHub's 100 MB per-file limit, so it is hosted
-separately:
+The checkpoint is 134 MB, over GitHub's 100 MB per-file limit, so it is attached
+to a release rather than committed:
 
-**Download:** _(Google Drive link — to be added)_
+**[Download best_counterfeit_model.pth](https://github.com/NIWDOGLEOJ/edgemedicheck/releases/download/v1.0/best_counterfeit_model.pth)** (134 MB, [release notes](https://github.com/NIWDOGLEOJ/edgemedicheck/releases/tag/v1.0))
+
+```bash
+curl -L -o results/output_v2/best_counterfeit_model.pth \
+  https://github.com/NIWDOGLEOJ/edgemedicheck/releases/download/v1.0/best_counterfeit_model.pth
+```
+
+Class order is `['Fake', 'Real']`, so `P(fake) = softmax(logits)[0]`.
 
 Place it at `results/output_v2/best_counterfeit_model.pth`. Everything else in
 `results/output_v2/` — metrics, per-operation breakdown, confusion matrix,
