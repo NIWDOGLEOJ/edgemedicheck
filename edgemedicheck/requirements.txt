@@ -1,7 +1,13 @@
 # EdgeMediCheck runtime dependencies
 #
 # Core pipeline -- required on both laptop and Raspberry Pi.
-opencv-python-headless>=4.8.0     # use opencv-python if you need cv2.imshow
+# Upper bound is deliberate. OpenCV 5.0 reordered the return tuple of
+# BarcodeDetector.detectAndDecodeMulti (4.x: retval, info, type, points;
+# 5.0: retval, info, points, straight_code), so an unbounded ">=4.8.0" quietly
+# installed 5.0 and fed corner coordinates into the barcode symbology field.
+# barcode.py now detects the layout at runtime, but pin the major version so a
+# future release cannot change the API underneath a Raspberry Pi deployment.
+opencv-python-headless>=4.8.0,<6   # use opencv-python if you need cv2.imshow
 numpy>=1.24.0
 Pillow>=10.0.0
 pytesseract>=0.3.10

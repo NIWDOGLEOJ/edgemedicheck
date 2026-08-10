@@ -395,13 +395,27 @@ def _decode_opencv(image: np.ndarray) -> list[DecodedCode]:
     # 1D barcodes (EAN/UPC/Code128). Present in OpenCV's objdetect module.
     try:
         if hasattr(cv2, "barcode") and hasattr(cv2.barcode, "BarcodeDetector"):
-            ok, texts, types, _ = cv2.barcode.BarcodeDetector().detectAndDecodeMulti(
-                image
-            )
+            res = cv2.barcode.BarcodeDetector().detectAndDecodeMulti(image)
+            ok, texts = res[0], res[1]
+            # The tail of this tuple was reordered between OpenCV versions:
+            #   4.x : retval, decoded_info, decoded_type, points
+            #   5.0 : retval, decoded_info, points, straight_code
+            # Unpacking positionally puts corner coordinates into the symbology
+            # field, which then reaches the interface as the barcode "type".
+            # Pick whichever element actually looks like a list of type names.
+            types: tuple = ()
+            for candidate in res[2:]:
+                if isinstance(candidate, (list, tuple)) and all(
+                    isinstance(c, str) for c in candidate
+                ):
+                    types = tuple(candidate)
+                    break
             if ok:
-                for text, kind in zip(texts, types):
-                    if text:
-                        out.append(interpret(text, str(kind) or "BARCODE", "opencv"))
+                for i, text in enumerate(texts):
+                    if not text:
+                        continue
+                    kind = types[i] if i < len(types) else ""
+                    out.append(interpret(text, str(kind) or "BARCODE", "opencv"))
     except Exception as exc:
         log.debug("OpenCV barcode detect failed: %s", exc)
 

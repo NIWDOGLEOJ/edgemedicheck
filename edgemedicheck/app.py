@@ -19,12 +19,15 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import math
+import threading
+import time
 from datetime import date
 from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from edgemedicheck import database as db
 from edgemedicheck.capture import CaptureError, LEDController, open_source
@@ -46,6 +49,34 @@ def _encode_preview(bgr: np.ndarray, max_edge: int = 480) -> str:
     if not ok:
         return ""
     return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
+
+
+def _json_safe(obj):
+    """Replace non-finite floats with None, recursively.
+
+    Several visual metrics are legitimately undefined on some frames --
+    `text_angle_spread` is the standard deviation of detected text-line angles,
+    which is NaN when no text lines were found at all. That is meaningful
+    inside the pipeline, but Python's json module serialises it as a bare
+    `NaN`, which is not valid JSON: `curl` piped through Python survives it
+    because Python's own parser is lenient, while every browser rejects the
+    whole response and the page sees a parse error instead of a result.
+
+    So non-finite values are converted here, at the point where they leave
+    Python, rather than by changing what the metrics mean.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.floating):
+        f = float(obj)
+        return f if math.isfinite(f) else None
+    if isinstance(obj, np.integer):
+        return int(obj)
+    return obj
 
 
 def _result_payload(result: ScanResult, preview: str | None = None) -> dict:
@@ -83,7 +114,91 @@ def _result_payload(result: ScanResult, preview: str | None = None) -> dict:
         "fields": fields,
         "crosscheck": result.crosscheck.status,
     }
-    return data
+    return _json_safe(data)
+
+
+class LiveCamera:
+    """One reader for the camera, shared by the preview and the scanner.
+
+    A capture device cannot be opened twice, and the live screen needs the
+    same frames for two purposes at once: a smooth preview so the pharmacist
+    can aim the pack, and a still to scan. So a single background thread owns
+    the device and keeps the most recent frame; both consumers read that.
+
+    The device is opened on demand and released once nobody has asked for a
+    frame recently, which keeps `POST /api/scan/live` -- which opens the
+    camera itself -- working when the live screen is not in use.
+    """
+
+    IDLE_TIMEOUT = 10.0  # seconds without a reader before releasing the device
+
+    def __init__(self, backend: str | None, folder: str | Path | None) -> None:
+        self._backend = backend
+        self._folder = folder
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._source = None
+        self._frame: np.ndarray | None = None
+        self._last_request = 0.0
+        self._running = False
+        self.error: str | None = None
+
+    def _run(self) -> None:
+        try:
+            self._source = open_source(self._backend, folder=self._folder)
+        except CaptureError as exc:
+            self.error = str(exc)
+            self._running = False
+            return
+
+        self.error = None
+        try:
+            while self._running:
+                if time.monotonic() - self._last_request > self.IDLE_TIMEOUT:
+                    break
+                try:
+                    frame = self._source.read()
+                except Exception as exc:  # noqa: BLE001
+                    self.error = str(exc)
+                    break
+                if frame is not None:
+                    with self._lock:
+                        self._frame = frame
+                # The pipeline is far slower than the sensor; there is nothing
+                # to gain from grabbing faster than the preview can show.
+                time.sleep(0.04)
+        finally:
+            self._running = False
+            if self._source is not None:
+                try:
+                    self._source.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._source = None
+
+    def _ensure_running(self) -> None:
+        self._last_request = time.monotonic()
+        if self._running:
+            return
+        self._running = True
+        self.error = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        # Give the device a moment to deliver its first frame, so the caller
+        # gets a picture rather than an empty response on the first request.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if self._frame is not None or not self._running:
+                return
+            time.sleep(0.05)
+
+    def read(self) -> np.ndarray | None:
+        self._ensure_running()
+        with self._lock:
+            return None if self._frame is None else self._frame.copy()
+
+    def stop(self) -> None:
+        self._running = False
 
 
 def create_app(
@@ -120,6 +235,76 @@ def create_app(
             calibration_groups=groups,
             today=date.today().isoformat(),
         )
+
+    live_camera = LiveCamera(backend, folder)
+    app.config["EMC_LIVE_CAMERA"] = live_camera
+
+    @app.route("/live")
+    def live():
+        return render_template(
+            "live.html",
+            backend=get_authenticator().backend,
+            today=date.today().isoformat(),
+        )
+
+    # ------------------------------------------------------------------
+    # Live preview
+    # ------------------------------------------------------------------
+
+    @app.route("/api/stream.mjpg")
+    def stream():
+        """Motion-JPEG preview.
+
+        Served from the host camera rather than the browser's, because the
+        counter deployment is a fixed enclosure camera attached to the Pi, and
+        because `getUserMedia` is blocked on plain HTTP over a LAN address --
+        which is exactly how a phone reaches this server.
+        """
+        def frames():
+            boundary = b"--emcframe\r\n"
+            while True:
+                frame = live_camera.read()
+                if frame is None:
+                    break
+                ok, buf = cv2.imencode(
+                    ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                if ok:
+                    yield (boundary
+                           + b"Content-Type: image/jpeg\r\n\r\n"
+                           + buf.tobytes() + b"\r\n")
+                time.sleep(0.08)
+
+        if live_camera.read() is None:
+            return jsonify({
+                "error": "camera_unavailable",
+                "message": live_camera.error or "No camera frames available.",
+            }), 503
+        return Response(frames(),
+                        mimetype="multipart/x-mixed-replace; boundary=emcframe")
+
+    @app.route("/api/scan/frame", methods=["POST"])
+    def scan_frame_endpoint():
+        """Scan the current preview frame, without disturbing the preview."""
+        frame = live_camera.read()
+        if frame is None:
+            return jsonify({
+                "error": "camera_unavailable",
+                "message": live_camera.error or "No camera frames available.",
+            }), 503
+        try:
+            from edgemedicheck.capture import find_package_region
+
+            region_ok, bbox, ratio = find_package_region(frame)
+            result = scan_image(
+                frame,
+                capture_meta={"region_ok": region_ok, "bbox": bbox,
+                              "area_ratio": ratio, "source": "live"},
+                db_path=db_path,
+            )
+            return jsonify(_result_payload(result))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Live frame scan failed")
+            return jsonify({"error": "scan_failed", "message": str(exc)}), 500
 
     # ------------------------------------------------------------------
     # Scan endpoints

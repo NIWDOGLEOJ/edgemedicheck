@@ -140,6 +140,34 @@ Grant camera access under System Settings → Privacy & Security → Camera.
 Without it OpenCV returns black frames rather than an error, which looks like
 a bug in the code.
 
+### Live scanning
+
+`http://<host>:5000/live` shows a continuous camera preview with the verdict
+beside it, rescanning every few seconds. Point the camera at a pack and the
+panel turns green, amber or red as the reading settles.
+
+The preview is streamed from the host camera as Motion JPEG rather than opened
+in the browser, for two reasons: the counter deployment's camera is the fixed
+enclosure unit attached to the Pi, not the tablet's; and browsers block
+`getUserMedia` on plain HTTP over a LAN address, which is exactly how a phone
+reaches this server.
+
+Scanning is chained rather than run on a timer — a scan takes 0.6–1.0 s on a
+laptop and several seconds on a Pi 4, so overlapping requests would queue up
+behind a single-frame camera.
+
+To demonstrate the screen without a camera, replay a folder of images:
+
+```bash
+python run.py serve --backend folder --folder data/images
+```
+
+What the colours mean: they report whether the printed details are internally
+consistent and whether the batch is in the local database. They are not a
+chemical test, and red most often means expired or unrecognised stock rather
+than a detected forgery. The visual stream runs the calibrated heuristic, not
+the CNN — see the transfer result above.
+
 ---
 
 ## Rebuilding the dataset and retraining
