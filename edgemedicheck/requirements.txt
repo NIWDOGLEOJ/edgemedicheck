@@ -61,4 +61,9 @@ cryptography>=41.0.0
 # ---------------------------------------------------------------------------
 # tflite-runtime>=2.14.0          # lightweight inference, no full TensorFlow
 # picamera2>=0.3.12               # Pi Camera Module v2 capture
-# RPi.GPIO>=0.7.1                 # LED ring control
+# RPi.GPIO>=0.7.1                 # LED ring + RGB status light
+#
+# On a Raspberry Pi 5, RPi.GPIO cannot drive the GPIO block at all: it imports
+# and then fails at setmode with an SOC peripheral address error. Install
+# gpiozero there instead -- statuslight.py falls back to it automatically.
+# gpiozero>=2.0                   # RGB status light on Pi 5

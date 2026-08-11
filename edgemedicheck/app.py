@@ -34,6 +34,7 @@ from edgemedicheck.capture import CaptureError, LEDController, open_source
 from edgemedicheck.cnn import get_authenticator
 from edgemedicheck.config import CONFIG
 from edgemedicheck.pipeline import ScanResult, scan_image
+from edgemedicheck.statuslight import get_status_light
 
 log = logging.getLogger(__name__)
 
@@ -479,9 +480,13 @@ def create_app(
     def health():
         auth = get_authenticator()
         calib = auth.calibration
+        light = get_status_light()
         return jsonify({
             "status": "ok",
             "visual_backend": auth.backend,
+            # Reported so a deployment check can tell "no light fitted" apart
+            # from "light fitted but its GPIO driver never loaded".
+            "status_light": light.backend,
             "model_backed": auth.backend in ("tflite", "keras"),
             "calibration_groups": sorted(calib.groups) if calib else [],
             "products": db.count_products(db_path),

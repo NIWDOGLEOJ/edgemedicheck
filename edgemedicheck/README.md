@@ -114,12 +114,13 @@ edgemedicheck/
 │   ├── database.py               SQLite batch store + verification
 │   ├── cnn.py                    Visual authentication (TFLite / Keras / heuristic)
 │   ├── fusion.py                 Algorithm 3 — decision fusion
+│   ├── statuslight.py            GPIO RGB verdict light
 │   └── pipeline.py               End-to-end orchestration
 ├── training/
 │   ├── make_synthetic_dataset.py Synthetic images for testing
 │   └── train_cnn.py              MobileNetV2 transfer learning + TFLite export
 ├── templates/index.html          Self-contained UI (no external assets)
-├── tests/test_pipeline.py        95 tests
+├── tests/test_pipeline.py        112 tests
 └── data/                         Database, images, models (created at runtime)
 ```
 
@@ -144,6 +145,7 @@ Each module maps to a row of Table IV in the paper.
 | `run.py calibrate FOLDER` | Fit the visual check on genuine reference images |
 | `run.py products` | List batch records |
 | `run.py stats` | Scan-log statistics |
+| `run.py light` | Test the GPIO colour status light |
 | `run.py serve` | Start the web interface |
 
 ---
@@ -428,6 +430,54 @@ Set the LED ring pin in `config.py` (`CaptureConfig.led_gpio_pin`) to drive
 illumination from GPIO; leave it `None` and the code runs unchanged without
 GPIO hardware.
 
+### Colour status light
+
+The verdict is mirrored onto an RGB LED on the GPIO header. At a counter the
+person holding the pack is looking at the pack, not at the screen, so the
+result has to be visible from across the counter and readable without reading.
+
+| State | Light |
+|---|---|
+| Scanning | Pulsing blue |
+| 🟢 GREEN | Solid green |
+| 🟡 YELLOW | Solid amber |
+| 🔴 RED | **Blinking** red |
+| Scan failed | Fast magenta blink |
+
+Red blinks and green does not, deliberately. Red/green confusion is the most
+common colour vision deficiency, and a device whose whole safety output is a
+red-versus-green distinction would be unreadable for roughly one man in twelve.
+Motion is the redundant channel: the "stop" state is the only one that moves.
+
+Wiring — one common-cathode RGB LED, each leg through its own 220 Ω resistor:
+
+| LED leg | Pin |
+|---|---|
+| Red | BCM 17 (header pin 11) |
+| Green | BCM 27 (header pin 13) |
+| Blue | BCM 22 (header pin 15) |
+| Common cathode | GND (header pin 9) |
+
+```bash
+pip install RPi.GPIO          # or: pip install gpiozero  (required on Pi 5)
+
+export EMC_LIGHT_RED_PIN=17
+export EMC_LIGHT_GREEN_PIN=27
+export EMC_LIGHT_BLUE_PIN=22
+
+python run.py light           # cycle every state to check the wiring
+python run.py light red       # hold one state
+```
+
+Three discrete LEDs work identically — the channels are independent. Blue is
+optional; without it the "scanning" state falls back to a blinking amber. Red
+and green are the minimum, since they carry the verdict.
+
+With no pins set the light is inert and every code path runs unchanged, which
+is how the same tree runs on a laptop. A GPIO error at runtime disables the
+light and logs once: the LED is an accessory to the verdict, never a reason for
+a scan to fail.
+
 ### Configuration
 
 Everything tunable lives in `edgemedicheck/config.py`. Environment overrides:
@@ -439,6 +489,11 @@ Everything tunable lives in `edgemedicheck/config.py`. Environment overrides:
 | `EMC_CAPTURE_BACKEND` | `auto` / `picamera` / `webcam` / `folder` |
 | `EMC_TESSERACT_CMD` | Path to the tesseract binary (Windows) |
 | `EMC_HOST`, `EMC_PORT` | Web interface bind address |
+| `EMC_LIGHT_RED_PIN`, `_GREEN_PIN`, `_BLUE_PIN` | Status light BCM pins (unset = no light) |
+| `EMC_LIGHT_COMMON_ANODE` | `1` for a common-anode LED (inverts every level) |
+| `EMC_LIGHT_PWM` | `0` for plain on/off LEDs (no amber mixing, no pulse) |
+| `EMC_LIGHT_BRIGHTNESS` | Overall level, `0.0`–`1.0` (PWM only) |
+| `EMC_LIGHT_HOLD_SECONDS` | Seconds to hold a verdict; `0` holds until the next scan |
 
 ---
 
@@ -485,11 +540,10 @@ Latency  mean 758 ms  min 593  max 1292
 python tests/test_pipeline.py
 ```
 
-95 tests covering date parsing across Indian label formats, GS1 element-string
+112 tests covering date parsing across Indian label formats, GS1 element-string
 parsing, barcode/text cross-checking, database verification precedence,
 decision fusion, preprocessing, calibration scoping, dataset splitting, schema
-migration, and LAN
-address detection.
+migration, the GPIO status light, and LAN address detection.
 
 Several are regression tests for bugs found during development:
 
