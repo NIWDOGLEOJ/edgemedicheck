@@ -120,6 +120,7 @@ edgemedicheck/
 │   ├── make_synthetic_dataset.py Synthetic images for testing
 │   └── train_cnn.py              MobileNetV2 transfer learning + TFLite export
 ├── templates/index.html          Self-contained UI (no external assets)
+├── docs/led-wiring.svg           Status light wiring diagram
 ├── tests/test_pipeline.py        112 tests
 └── data/                         Database, images, models (created at runtime)
 ```
@@ -449,14 +450,31 @@ common colour vision deficiency, and a device whose whole safety output is a
 red-versus-green distinction would be unreadable for roughly one man in twelve.
 Motion is the redundant channel: the "stop" state is the only one that moves.
 
-Wiring — one common-cathode RGB LED, each leg through its own 220 Ω resistor:
+#### Wiring
 
-| LED leg | Pin |
-|---|---|
-| Red | BCM 17 (header pin 11) |
-| Green | BCM 27 (header pin 13) |
-| Blue | BCM 22 (header pin 15) |
-| Common cathode | GND (header pin 9) |
+![Status light wiring: pin 9 to the LED common cathode, pins 11, 13 and 15 through 330 Ω, 100 Ω and 100 Ω resistors to the red, green and blue legs](docs/led-wiring.svg)
+
+| LED leg | Pin | Resistor |
+|---|---|---|
+| Common cathode | GND (header pin 9) | none |
+| Red | BCM 17 (header pin 11) | 330 Ω |
+| Green | BCM 27 (header pin 13) | 100 Ω |
+| Blue | BCM 22 (header pin 15) | 100 Ω |
+
+The resistors differ because the 3.3 V rail does not sit the same distance above
+each die. Red drops about 2.0 V and has 1.3 V to spare; green and blue drop
+3.0–3.2 V and have almost none. Equal resistors give a bright red beside two
+feeble companions — and since amber is a *mix* of red and green, an imbalance
+there turns "verify manually" into something that reads as "do not dispense".
+
+Never wire an LED without a resistor: the GPIO pins have no current limiting,
+and a direct connection can damage a pin permanently. A ready-made RGB module
+(KY-016 and similar) has the resistors on the board already — wire the four pins
+straight across.
+
+Leg order on the LED itself varies by manufacturer. The longest leg is always
+the common one; `run.py light` tells you whether you guessed the other three
+right.
 
 ```bash
 pip install RPi.GPIO          # or: pip install gpiozero  (required on Pi 5)
@@ -472,6 +490,12 @@ python run.py light red       # hold one state
 Three discrete LEDs work identically — the channels are independent. Blue is
 optional; without it the "scanning" state falls back to a blinking amber. Red
 and green are the minimum, since they carry the verdict.
+
+For a common-anode LED one wire moves: the common leg goes to 3V3 (header pin 1)
+instead of GND, and `EMC_LIGHT_COMMON_ANODE=1` inverts every level the driver
+writes. Everything else is unchanged.
+
+![Common-anode variant: the common leg goes to pin 1 (3V3) instead of pin 9 (GND)](docs/led-wiring-common-anode.svg)
 
 With no pins set the light is inert and every code path runs unchanged, which
 is how the same tree runs on a laptop. A GPIO error at runtime disables the
