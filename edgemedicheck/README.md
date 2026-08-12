@@ -444,6 +444,11 @@ result has to be visible from across the counter and readable without reading.
 | 🟡 YELLOW | Solid amber |
 | 🔴 RED | **Blinking** red |
 | Scan failed | Fast magenta blink |
+| Pack taken away | Off |
+
+The verdict holds while the pack is in front of the camera and clears when it
+is taken away, following the live screen's own idle state. A colour left lit
+over an empty counter is a claim about a pack that is not there.
 
 Red blinks and green does not, deliberately. Red/green confusion is the most
 common colour vision deficiency, and a device whose whole safety output is a

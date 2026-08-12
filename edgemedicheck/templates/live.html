@@ -21,9 +21,11 @@
 
   .stage { position:relative; background:#000; border:1px solid var(--line);
            border-radius:10px; overflow:hidden; min-height:16rem; }
-  .stage img { width:100%; display:block; }
-  .reticle { position:absolute; inset:12% 10%; border:2px dashed rgba(255,255,255,.35);
-             border-radius:8px; pointer-events:none; }
+  .stage img, .stage video { width:100%; display:block; }
+  .reticle { position:absolute; inset:12% 10%; border:2px dashed rgba(255,255,255,.3);
+             border-radius:8px; pointer-events:none; transition:border-color .2s; }
+  .reticle.armed { border-color:rgba(46,160,67,.85); }
+  .reticle.busy  { border-color:rgba(191,135,0,.9); }
 
   /* The verdict bar is the whole point of this screen: it must be readable
      across a pharmacy counter, so it is the largest thing on the page. */
@@ -54,11 +56,13 @@
   .dot { display:inline-block; width:.5rem; height:.5rem; border-radius:50%;
          background:var(--muted); margin-right:.4rem; }
   .dot.busy { background:#2ea043; }
+  .dot.warn { background:#bf8700; }
 
   .note { font-size:.78rem; color:var(--muted); line-height:1.5; margin-top:1rem;
           border-left:2px solid var(--line); padding-left:.7rem; }
-  .err { background:#3d1418; border:1px solid var(--red); border-radius:8px;
-         padding:.8rem 1rem; margin:1rem; font-size:.9rem; }
+  .banner { background:#3d2b06; border:1px solid var(--yellow); border-radius:8px;
+            padding:.7rem 1rem; margin:1rem; font-size:.88rem; display:none; }
+  .banner button { margin-left:.6rem; padding:.3rem .7rem; }
 </style>
 </head>
 <body>
@@ -69,46 +73,39 @@
   <span class="status" style="margin-left:auto">visual backend: {{ backend }}</span>
 </header>
 
-<div id="fatal" class="err" style="display:none"></div>
+<div id="banner" class="banner"></div>
 
 <div class="wrap">
   <div>
     <div class="stage">
-      <video id="cam" playsinline muted autoplay style="width:100%;display:none"></video>
+      <video id="cam" playsinline muted autoplay style="display:none"></video>
       <img id="preview" alt="camera preview" style="display:none">
-      <div class="reticle"></div>
+      <div class="reticle" id="reticle"></div>
     </div>
-    <div id="srcnote" class="status" style="margin-top:.5rem"></div>
     <div class="controls">
       <button id="toggle" class="primary">Pause</button>
       <button id="once">Scan now</button>
-      <label class="status">
-        every
-        <select id="interval">
-          <option value="1500">1.5 s</option>
-          <option value="2500" selected>2.5 s</option>
-          <option value="4000">4 s</option>
-          <option value="8000">8 s</option>
-        </select>
-      </label>
       <span class="status"><span class="dot" id="dot"></span><span id="status">starting…</span></span>
+      <span class="status" id="srcnote" style="margin-left:auto"></span>
     </div>
     <p class="note">
-      Place the pack inside the dashed guide, whole and in focus. Each scan reads
-      the printed panel, so the batch and expiry text must be legible in the
-      preview — if you cannot read it on screen, neither can the OCR.
+      Hands-free. Hold a pack inside the dashed guide and hold it still — the
+      scan starts by itself once the pack has settled, and the result stays on
+      screen until you take the pack away. Each scan reads the printed panel,
+      so the batch and expiry text must be legible in the preview: if you
+      cannot read it on screen, neither can the OCR.
     </p>
   </div>
 
   <div>
     <div id="verdict" class="verdict">
-      <div class="state" id="state">Waiting for first scan…</div>
-      <div class="why" id="why">Point the camera at a medicine pack.</div>
+      <div class="state" id="state">Waiting for a pack…</div>
+      <div class="why" id="why">Hold a medicine pack in front of the camera.</div>
     </div>
 
     <div class="card">
       <h2>Read from the package</h2>
-      <div id="fields"></div>
+      <div id="fields"><div class="row"><span class="k">nothing scanned yet</span></div></div>
     </div>
 
     <div class="card">
@@ -117,7 +114,7 @@
     </div>
 
     <p class="note">
-      Green, yellow and red report whether the printed details are consistent
+      Green, amber and red report whether the printed details are consistent
       and whether the batch is in the local database. They are not a chemical
       test, and red most often means expired or unrecognised stock rather than
       a detected forgery.
@@ -127,9 +124,23 @@
 
 <script>
 (function () {
+  "use strict";
+
   var COLOURS = { green:"#1a7f37", yellow:"#bf8700", red:"#cf222e" };
 
+  // Detector constants for device-camera mode. The server has
+  // find_package_region for this; in the browser the equivalent has to be
+  // cheap enough to run several times a second on a phone, so presence is
+  // judged by how much detail sits in the middle of the frame. A bare counter
+  // or a wall is flat; a printed carton is not.
+  var DET_W = 80, DET_H = 60;      // detector resolution
+  var PRESENT_STDDEV = 14;         // luma spread in the centre => something there
+  var MOTION_STILL   = 4.0;        // mean abs frame difference => settled
+  var CONFIRM_PRESENT = 2, CONFIRM_ABSENT = 4, CONFIRM_STEADY = 2;
+  var POLL_MS = 300;               // detector cadence, both modes
+
   var preview  = document.getElementById("preview");
+  var cam      = document.getElementById("cam");
   var verdict  = document.getElementById("verdict");
   var stateEl  = document.getElementById("state");
   var whyEl    = document.getElementById("why");
@@ -139,42 +150,106 @@
   var dotEl    = document.getElementById("dot");
   var toggle   = document.getElementById("toggle");
   var once     = document.getElementById("once");
-  var intervalSel = document.getElementById("interval");
-  var fatal    = document.getElementById("fatal");
+  var srcnote  = document.getElementById("srcnote");
+  var banner   = document.getElementById("banner");
+  var reticle  = document.getElementById("reticle");
 
-  var running = true, inFlight = false, timer = null;
-  var cam = document.getElementById("cam");
-  var srcnote = document.getElementById("srcnote");
-  var mode = null;              // "device" | "host"
+  var mode = null;                 // "device" | "host"
+  var phase = "idle";              // idle | scanning | held
+  var running = true;
+  var timer = null;
+  var stream = null;
+  var backoff = 1000;              // camera retry backoff, ms
+
   var canvas = document.createElement("canvas");
+  var det = document.createElement("canvas");
+  det.width = DET_W; det.height = DET_H;
+  var detCtx = det.getContext("2d", { willReadFrequently: true });
+  var prevLuma = null;
+  var presentRun = 0, absentRun = 0, steadyRun = 0;
+  var present = false, steady = false, looksPresent = false;
 
-  // Prefer the camera of whatever device is viewing this page, so a phone or
-  // laptop on the counter Wi-Fi is itself the scanner. That needs a secure
-  // context: over plain HTTP on a LAN address the browser does not even
-  // expose mediaDevices, so fall back to streaming the host's camera.
-  function startDeviceCamera() {
-    var secure = window.isSecureContext
-              && navigator.mediaDevices
-              && navigator.mediaDevices.getUserMedia;
-    if (!secure) {
-      return Promise.reject(new Error(
-        location.protocol === "https:"
-          ? "This browser did not expose a camera API."
-          : "Camera access needs HTTPS. Restart the server with --https, "
-          + "or keep using the host camera below."));
+  // ---------------------------------------------------------------- utils
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c];
+    });
+  }
+
+  function showBanner(msg, withRetry) {
+    banner.innerHTML = esc(msg);
+    if (withRetry) {
+      var b = document.createElement("button");
+      b.textContent = "Retry";
+      b.onclick = function () { hideBanner(); backoff = 1000; startCamera(); };
+      banner.appendChild(b);
+    }
+    banner.style.display = "block";
+  }
+  function hideBanner() { banner.style.display = "none"; }
+
+  function setPhase(p) {
+    phase = p;
+    reticle.className = "reticle"
+      + (p === "scanning" ? " busy" : (p === "held" ? " armed" : ""));
+  }
+
+  function showIdle() {
+    setPhase("idle");
+    verdict.style.background = "";
+    verdict.classList.remove("on");
+    stateEl.textContent = "Waiting for a pack…";
+    whyEl.textContent = "Hold a medicine pack in front of the camera.";
+  }
+
+  // ------------------------------------------------------------- camera
+
+  function startCamera() {
+    // Prefer the camera of whatever device is viewing this page, so a phone or
+    // laptop on the counter Wi-Fi is itself the scanner. That needs a secure
+    // context: over plain HTTP on a LAN address the browser does not even
+    // expose mediaDevices, so fall back to streaming the host's camera.
+    var canDevice = window.isSecureContext
+                 && navigator.mediaDevices
+                 && navigator.mediaDevices.getUserMedia;
+    if (!canDevice) {
+      srcnote.textContent = (location.protocol === "https:")
+        ? "No camera API in this browser — using the server's camera."
+        : "HTTPS needed for this device's camera — using the server's camera.";
+      return startHostCamera();
     }
     // facingMode is a hint, not a guarantee: laptops have only a front camera
     // and ignore it, phones honour it and pick the rear lens.
-    return navigator.mediaDevices.getUserMedia({
+    navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" },
                width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false
-    }).then(function (stream) {
-      cam.srcObject = stream;
+    }).then(function (s) {
+      stream = s;
+      cam.srcObject = s;
       cam.style.display = "block";
       preview.style.display = "none";
       mode = "device";
+      backoff = 1000;
+      hideBanner();
       srcnote.textContent = "Using this device's camera.";
+      // A camera can vanish mid-session: unplugged, taken by another app, or
+      // released when a laptop lid closes. Re-acquire instead of dying.
+      s.getVideoTracks().forEach(function (t) {
+        t.addEventListener("ended", function () { cameraLost("camera disconnected"); });
+      });
+    }).catch(function (e) {
+      if (e && e.name === "NotAllowedError") {
+        // The only case a person must act on. Still recoverable in place.
+        showBanner("Camera permission was denied. Allow camera access for this "
+                 + "page, then retry — no need to reload.", true);
+        srcnote.textContent = "camera permission denied";
+        return startHostCamera();
+      }
+      srcnote.textContent = "This device's camera is unavailable — using the "
+                          + "server's camera.";
+      startHostCamera();
     });
   }
 
@@ -185,69 +260,129 @@
     // Cache-buster: without it the browser reuses one stream response and the
     // preview freezes on a reconnect.
     preview.src = "/api/stream.mjpg?t=" + Date.now();
-    preview.onerror = function () {
-      showFatal("No camera available. Grant camera permission on the machine "
-              + "running the server, or start it with "
-              + "--backend folder --folder <dir> to replay images.");
-    };
+    preview.onerror = function () { cameraLost("preview stream dropped"); };
+    preview.onload = function () { backoff = 1000; hideBanner(); };
   }
 
-  startDeviceCamera().catch(function (e) {
-    srcnote.textContent = (e && e.message ? e.message : String(e))
-                        + " Falling back to the server's camera.";
-    startHostCamera();
-  });
+  // Never terminal: back off and try again, so an unplugged webcam or a
+  // restarted server recovers without anyone touching the page.
+  function cameraLost(why) {
+    if (stream) {
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+      stream = null;
+    }
+    statusEl.textContent = why + " — retrying";
+    dotEl.className = "dot warn";
+    showIdle();
+    setTimeout(function () {
+      backoff = Math.min(backoff * 2, 10000);
+      startCamera();
+    }, backoff);
+  }
 
-  // A frame from whichever source is live, as a JPEG blob.
-  function grabFrame() {
+  // ----------------------------------------------------------- detector
+
+  // Presence and stillness for the device camera, computed here rather than
+  // by uploading frames: at three checks a second, shipping JPEGs over the
+  // counter Wi-Fi purely to ask "is anything there?" would be wasteful.
+  function detectLocal() {
+    var w = cam.videoWidth, h = cam.videoHeight;
+    if (!w || !h) return null;
+    detCtx.drawImage(cam, 0, 0, DET_W, DET_H);
+    var data = detCtx.getImageData(0, 0, DET_W, DET_H).data;
+
+    var luma = new Float32Array(DET_W * DET_H);
+    for (var i = 0, p = 0; i < data.length; i += 4, p++) {
+      luma[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+
+    var motion = Infinity;
+    if (prevLuma) {
+      var sum = 0;
+      for (var j = 0; j < luma.length; j++) sum += Math.abs(luma[j] - prevLuma[j]);
+      motion = sum / luma.length;
+    }
+    prevLuma = luma;
+
+    // Detail inside the central box, matching the on-screen reticle.
+    var x0 = Math.floor(DET_W * 0.10), x1 = Math.floor(DET_W * 0.90);
+    var y0 = Math.floor(DET_H * 0.12), y1 = Math.floor(DET_H * 0.88);
+    var n = 0, mean = 0, m2 = 0;
+    for (var y = y0; y < y1; y++) {
+      for (var x = x0; x < x1; x++) {
+        var v = luma[y * DET_W + x];
+        n++; var d = v - mean; mean += d / n; m2 += d * (v - mean);
+      }
+    }
+    var stddev = n > 1 ? Math.sqrt(m2 / (n - 1)) : 0;
+    return { stddev: stddev, motion: motion,
+             looksPresent: stddev >= PRESENT_STDDEV };
+  }
+
+  function foldLocal(r) {
+    looksPresent = r.looksPresent;
+    if (r.looksPresent) { presentRun++; absentRun = 0; }
+    else { absentRun++; presentRun = 0; }
+    if (presentRun >= CONFIRM_PRESENT) present = true;
+    if (absentRun  >= CONFIRM_ABSENT)  present = false;
+
+    if (r.motion <= MOTION_STILL) steadyRun++; else steadyRun = 0;
+    steady = steadyRun >= CONFIRM_STEADY;
+
+    return { present: present, steady: steady,
+             ready: present && steady && looksPresent };
+  }
+
+  function readState() {
+    if (mode === "device") {
+      var r = detectLocal();
+      if (!r) return Promise.resolve({ present:false, steady:false, ready:false });
+      return Promise.resolve(foldLocal(r));
+    }
+    return fetch("/api/live/state")
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (s.error) statusEl.textContent = s.error;
+        return s;
+      });
+  }
+
+  // --------------------------------------------------------------- scan
+
+  function requestScan(force) {
+    if (mode !== "device") {
+      return fetch("/api/scan/frame" + (force ? "?force=1" : ""),
+                   { method: "POST" });
+    }
     return new Promise(function (resolve, reject) {
-      if (mode !== "device") return resolve(null);
       var w = cam.videoWidth, h = cam.videoHeight;
       if (!w || !h) return reject(new Error("camera still starting"));
       canvas.width = w; canvas.height = h;
       canvas.getContext("2d").drawImage(cam, 0, 0, w, h);
       canvas.toBlob(function (blob) {
-        blob ? resolve(blob) : reject(new Error("could not read a frame"));
+        if (!blob) return reject(new Error("could not read a frame"));
+        var form = new FormData();
+        form.append("image", blob, "frame.jpg");
+        resolve(fetch("/api/scan/upload", { method: "POST", body: form }));
       }, "image/jpeg", 0.9);
-    });
-  }
-
-  function showFatal(msg) {
-    fatal.textContent = msg;
-    fatal.style.display = "block";
-    running = false;
-    toggle.disabled = true;
-    statusEl.textContent = "stopped";
-  }
-
-  function esc(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c];
     });
   }
 
   function render(data) {
     var v = data.verdict || {};
-    var key = (v.verdict || "").toLowerCase();
-    var colour = COLOURS[key];
+    var colour = COLOURS[(v.verdict || "").toLowerCase()];
 
     stateEl.textContent = v.headline || "—";
     whyEl.textContent   = v.reason_text || v.advice || "";
-    if (colour) {
-      verdict.style.background = colour;
-      verdict.classList.add("on");
-    } else {
-      verdict.style.background = "";
-      verdict.classList.remove("on");
-    }
+    if (colour) { verdict.style.background = colour; verdict.classList.add("on"); }
+    else { verdict.style.background = ""; verdict.classList.remove("on"); }
 
     var fields = (data.display && data.display.fields) || [];
     fieldsEl.innerHTML = fields.map(function (f) {
-      var val = f.value;
-      var cls = val ? "v" : "v none";
       var src = f.source ? ' <span class="k">(' + esc(f.source) + ")</span>" : "";
       return '<div class="row"><span class="k">' + esc(f.label) + "</span>"
-           + '<span class="' + cls + '">' + esc(val || "not read") + src + "</span></div>";
+           + '<span class="' + (f.value ? "v" : "v none") + '">'
+           + esc(f.value || "not read") + src + "</span></div>";
     }).join("") || '<div class="row"><span class="k">nothing read</span></div>';
 
     var findings = v.findings || [];
@@ -263,69 +398,84 @@
       : '<div class="row"><span class="k">none</span></div>';
   }
 
-  // Device frames are uploaded; the host camera is scanned server-side from
-  // the frame it already holds, so nothing travels twice.
-  function requestScan() {
-    if (mode !== "device") {
-      return fetch("/api/scan/frame", { method: "POST" });
-    }
-    return grabFrame().then(function (blob) {
-      var form = new FormData();
-      form.append("image", blob, "frame.jpg");
-      return fetch("/api/scan/upload", { method: "POST", body: form });
-    });
-  }
-
-  function scanOnce() {
-    if (inFlight) return;
-    inFlight = true;
-    dotEl.classList.add("busy");
+  function doScan(force) {
+    setPhase("scanning");
+    dotEl.className = "dot busy";
     statusEl.textContent = "scanning…";
     var t0 = performance.now();
 
-    requestScan()
+    return requestScan(force)
       .then(function (r) {
-        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+        return r.json().then(function (b) { return { ok: r.ok, body: b }; });
       })
       .then(function (res) {
         if (!res.ok) {
-          statusEl.textContent = res.body.message || "scan failed";
-          if (res.body.error === "camera_unavailable") showFatal(res.body.message);
+          if (res.body && res.body.error === "camera_unavailable") {
+            cameraLost(res.body.message || "camera unavailable");
+            return;
+          }
+          statusEl.textContent = (res.body && res.body.message) || "scan failed";
+          setPhase("idle");
           return;
         }
+        if (res.body.idle) { setPhase("idle"); return; }   // pack left mid-scan
         render(res.body);
-        var ms = Math.round(performance.now() - t0);
-        statusEl.textContent = "last scan " + ms + " ms";
+        setPhase("held");
+        statusEl.textContent = "scanned in " + Math.round(performance.now() - t0)
+                             + " ms — remove the pack to scan another";
       })
-      // Report what actually failed. A bare "network error" here hid a
-      // server-side JSON parse failure for some time: the request had in fact
-      // returned 200, and only the response body was unreadable.
-      .catch(function (e) { statusEl.textContent = String(e && e.message || e); })
-      .finally(function () {
-        inFlight = false;
-        dotEl.classList.remove("busy");
-        schedule();
-      });
+      .catch(function (e) {
+        statusEl.textContent = String((e && e.message) || e);
+        setPhase("idle");
+      })
+      .finally(function () { dotEl.className = "dot"; });
   }
 
-  // Chained rather than setInterval: a scan can take longer than the interval,
-  // and overlapping requests would queue up behind a single-frame camera.
-  function schedule() {
-    clearTimeout(timer);
+  // ---------------------------------------------------------------- loop
+
+  // Chained rather than setInterval: a scan outlasts the poll interval on a
+  // Pi, and overlapping requests would queue behind a single-frame camera.
+  function tick() {
     if (!running) return;
-    timer = setTimeout(scanOnce, parseInt(intervalSel.value, 10));
+    readState()
+      .then(function (s) {
+        if (phase === "idle") {
+          if (s.ready) return doScan(false);
+          statusEl.textContent = s.present ? "hold still…" : "waiting for a pack";
+        } else if (phase === "held") {
+          // Re-arm only once the pack has actually gone, so one pack gives one
+          // scan instead of a scan every few seconds for as long as it is held.
+          if (!s.present) { showIdle(); statusEl.textContent = "waiting for a pack"; }
+        }
+      })
+      .catch(function () { /* transient; the next tick retries */ })
+      .finally(function () {
+        clearTimeout(timer);
+        if (running) timer = setTimeout(tick, POLL_MS);
+      });
   }
 
   toggle.addEventListener("click", function () {
     running = !running;
     toggle.textContent = running ? "Pause" : "Resume";
     toggle.classList.toggle("primary", running);
-    if (running) scanOnce(); else { clearTimeout(timer); statusEl.textContent = "paused"; }
+    if (running) tick();
+    else { clearTimeout(timer); statusEl.textContent = "paused"; }
   });
-  once.addEventListener("click", scanOnce);
-  intervalSel.addEventListener("change", schedule);
 
-  setTimeout(scanOnce, 900);
+  // Manual override: read whatever is in front of the lens right now, even if
+  // the detector has not called it settled.
+  once.addEventListener("click", function () { doScan(true); });
+
+  // A backgrounded tab throttles timers and suspends the camera; re-check on
+  // return so the screen is live again without a reload.
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && running) { prevLuma = null; tick(); }
+  });
+
+  showIdle();
+  startCamera();
+  setTimeout(tick, 800);
 })();
 </script>
 </body>

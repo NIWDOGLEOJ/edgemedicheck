@@ -316,6 +316,118 @@ def find_package_region(
     return is_valid, (x, y, bw, bh), float(area_ratio)
 
 
+class PresenceDetector:
+    """Decides when a pack has been presented, and when it has been taken away.
+
+    The live screen is hands-free: it waits for a package instead of scanning
+    on a timer. It cannot poll with the pipeline to find out whether anything
+    is there -- a full `scan_image` is 0.6-1.3 s on a workstation and several
+    seconds on a Pi 4 -- so this runs the cheap checks at frame rate and lets
+    the expensive pass fire once per pack.
+
+    Two conditions must hold before a scan is worth taking:
+
+    `present`  the largest contour fills enough of the frame, via
+               `find_package_region`. This is a fill-fraction test, not
+               recognition: it says something is there, not that it is a
+               medicine box.
+    `steady`   the scene has stopped changing. Scanning while a hand is still
+               withdrawing yields motion blur and a wasted pipeline run, so a
+               pack is read once it has been set down.
+
+    Both are debounced over consecutive frames, because a single noisy frame
+    should neither trigger a scan nor drop a verdict that is still on screen.
+
+    The caller drives this with whatever frames it already has; the detector
+    holds only the previous downscaled grey frame and three counters.
+    """
+
+    def __init__(self, cfg: CaptureConfig | None = None) -> None:
+        self.cfg = cfg or CONFIG.capture
+        self._prev_small: np.ndarray | None = None
+        self._present_run = 0
+        self._absent_run = 0
+        self._steady_run = 0
+        self.present = False
+        self.steady = False
+        self.motion = 0.0
+        self.area_ratio = 0.0
+        self._looks_present = False
+
+    def reset(self) -> None:
+        """Forget history, e.g. after the camera has been reopened."""
+        self._prev_small = None
+        self._present_run = self._absent_run = self._steady_run = 0
+        self.present = False
+        self.steady = False
+        self._looks_present = False
+
+    def _downscale(self, frame: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        longest = max(h, w)
+        edge = self.cfg.detector_max_edge
+        if longest <= edge:
+            return frame
+        scale = edge / longest
+        return cv2.resize(frame, (max(1, int(w * scale)), max(1, int(h * scale))),
+                          interpolation=cv2.INTER_AREA)
+
+    def update(self, frame: np.ndarray) -> dict:
+        """Fold one frame in and return the current view of the scene."""
+        small = self._downscale(frame)
+        grey = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+
+        # Mean absolute difference against the previous frame. The first frame
+        # has nothing to compare against, so treat it as moving: that way a
+        # scan is never taken from a single frame with no stability evidence.
+        if self._prev_small is not None and self._prev_small.shape == grey.shape:
+            self.motion = float(np.abs(
+                grey.astype(np.int16) - self._prev_small.astype(np.int16)
+            ).mean())
+        else:
+            self.motion = float("inf")
+        self._prev_small = grey
+
+        _, _, self.area_ratio = find_package_region(small, self.cfg)
+        looks_present = self.area_ratio >= self.cfg.min_package_area_ratio
+        self._looks_present = looks_present
+
+        if looks_present:
+            self._present_run += 1
+            self._absent_run = 0
+        else:
+            self._absent_run += 1
+            self._present_run = 0
+
+        if self._present_run >= self.cfg.frames_to_confirm_present:
+            self.present = True
+        if self._absent_run >= self.cfg.frames_to_confirm_absent:
+            self.present = False
+
+        if self.motion <= self.cfg.motion_threshold:
+            self._steady_run += 1
+        else:
+            self._steady_run = 0
+        self.steady = self._steady_run >= self.cfg.frames_to_confirm_steady
+
+        return self.state()
+
+    def state(self) -> dict:
+        return {
+            "present": bool(self.present),
+            "steady": bool(self.steady),
+            # inf is not representable in JSON; the caller reads "very high".
+            "motion": (None if self.motion == float("inf")
+                       else round(self.motion, 3)),
+            "area_ratio": round(float(self.area_ratio), 4),
+            # `present` latches through the absent debounce, so on its own it
+            # stays true for a few frames after a pack is lifted away. Require
+            # the current frame to still look occupied as well, or a scan can
+            # fire at an empty counter just as the previous pack leaves.
+            "ready": bool(self.present and self.steady and self._looks_present),
+        }
+
+
 def capture_scan(
     source: CameraSource,
     led: LEDController | None = None,

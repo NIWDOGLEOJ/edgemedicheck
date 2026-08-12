@@ -163,9 +163,44 @@ enclosure unit attached to the Pi, not the tablet's; and browsers block
 `getUserMedia` on plain HTTP over a LAN address, which is exactly how a phone
 reaches this server.
 
+### Hands-free operation
+
+The screen waits for a pack rather than scanning on a timer:
+
+```
+IDLE ──pack present & still──► SCANNING ──result──► HELD
+ ▲                                                   │
+ └───────────── pack taken away ─────────────────────┘
+```
+
+Hold a pack in the guide and let it settle; the scan starts by itself, the
+colour stays while the pack is there, and the panel returns to a neutral
+"waiting for a pack" once it is removed. The next pack is scanned fresh. No
+button, no reload.
+
+This matters for cost as much as for ergonomics. A full pipeline pass is
+0.6–1.3 s on a laptop and several seconds on a Pi 4, dominated by Tesseract —
+which runs twice whenever the first pass is not `complete` — so polling with it
+is not viable on the target hardware. Presence is decided by a separate cheap
+loop (`PresenceDetector` in `edgemedicheck/capture.py`) that reuses
+`find_package_region` on a downscaled frame plus a frame-difference stillness
+check, and the pipeline runs once per pack. Measured on a laptop: **~11% CPU
+idle against 36–162% while scanning.**
+
+Scanning without that gate also produced a wrong answer, not merely a wasted
+one: an empty frame comes back amber `OCR_UNCERTAIN`, and on this screen amber
+means "verify this manually" — a warning about a pack that is not there.
+
 Scanning is chained rather than run on a timer — a scan takes 0.6–1.0 s on a
 laptop and several seconds on a Pi 4, so overlapping requests would queue up
 behind a single-frame camera.
+
+The camera never gives up. A dropped preview, an unplugged webcam, a lid
+closing, a browser tab returning from the background, or the server itself
+restarting are all retried with backoff, at both ends: the capture thread
+reopens the device, and the page reconnects. The one case needing a person is a
+denied camera permission, and even that offers a Retry button rather than
+demanding a reload.
 
 To demonstrate the screen without a camera, replay a folder of images:
 
