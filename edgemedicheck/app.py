@@ -30,7 +30,9 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 
 from edgemedicheck import database as db
-from edgemedicheck.capture import CaptureError, LEDController, open_source
+from edgemedicheck.capture import (
+    CaptureError, LEDController, PresenceDetector, open_source,
+)
 from edgemedicheck.cnn import get_authenticator
 from edgemedicheck.config import CONFIG
 from edgemedicheck.pipeline import ScanResult, scan_image
@@ -128,9 +130,22 @@ class LiveCamera:
     The device is opened on demand and released once nobody has asked for a
     frame recently, which keeps `POST /api/scan/live` -- which opens the
     camera itself -- working when the live screen is not in use.
+
+    The same thread runs the presence detector, because it is the only place
+    that sees consecutive frames. Detection is strided rather than run on
+    every grab: the point is to spend almost nothing while the counter is
+    empty, since on a Pi that idle cost is paid all day.
+
+    A failed open or a failed read no longer ends the session. The thread
+    stops, records why, and backs off; the next reader restarts it. That is
+    what lets the live screen survive a webcam being unplugged, a laptop lid
+    closing, or another application taking the camera, without anyone
+    reloading the page.
     """
 
     IDLE_TIMEOUT = 10.0  # seconds without a reader before releasing the device
+    RETRY_MIN = 1.0      # backoff after a failed open/read
+    RETRY_MAX = 10.0
 
     def __init__(self, backend: str | None, folder: str | Path | None) -> None:
         self._backend = backend
@@ -141,17 +156,26 @@ class LiveCamera:
         self._frame: np.ndarray | None = None
         self._last_request = 0.0
         self._running = False
+        self._retry_at = 0.0
+        self._retry_delay = self.RETRY_MIN
+        self._detector = PresenceDetector()
+        self._state: dict = self._detector.state()
+        self._tick = 0
         self.error: str | None = None
 
     def _run(self) -> None:
         try:
             self._source = open_source(self._backend, folder=self._folder)
         except CaptureError as exc:
-            self.error = str(exc)
-            self._running = False
+            self._fail(str(exc))
             return
 
+        # A successful open clears the previous failure and the backoff, so a
+        # camera that comes and goes is retried promptly each time.
         self.error = None
+        self._retry_delay = self.RETRY_MIN
+        self._detector.reset()
+
         try:
             while self._running:
                 if time.monotonic() - self._last_request > self.IDLE_TIMEOUT:
@@ -159,11 +183,16 @@ class LiveCamera:
                 try:
                     frame = self._source.read()
                 except Exception as exc:  # noqa: BLE001
-                    self.error = str(exc)
-                    break
+                    self._fail(str(exc))
+                    return
                 if frame is not None:
                     with self._lock:
                         self._frame = frame
+                    self._tick += 1
+                    if self._tick % max(1, CONFIG.capture.detector_stride) == 0:
+                        state = self._detector.update(frame)
+                        with self._lock:
+                            self._state = state
                 # The pipeline is far slower than the sensor; there is nothing
                 # to gain from grabbing faster than the preview can show.
                 time.sleep(0.04)
@@ -176,12 +205,27 @@ class LiveCamera:
                     pass
                 self._source = None
 
+    def _fail(self, message: str) -> None:
+        """Record a failure and hold off before the next attempt."""
+        self.error = message
+        self._running = False
+        self._retry_at = time.monotonic() + self._retry_delay
+        self._retry_delay = min(self._retry_delay * 2, self.RETRY_MAX)
+        # A stale frame would be presented as though it were live.
+        with self._lock:
+            self._frame = None
+            self._state = self._detector.state()
+        self._detector.reset()
+        log.warning("Live camera stopped: %s (retrying in %.0fs)",
+                    message, self._retry_delay)
+
     def _ensure_running(self) -> None:
         self._last_request = time.monotonic()
         if self._running:
             return
+        if time.monotonic() < self._retry_at:
+            return  # still backing off from the last failure
         self._running = True
-        self.error = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         # Give the device a moment to deliver its first frame, so the caller
@@ -196,6 +240,15 @@ class LiveCamera:
         self._ensure_running()
         with self._lock:
             return None if self._frame is None else self._frame.copy()
+
+    def state(self) -> dict:
+        """Current scene reading, without copying a frame out."""
+        self._ensure_running()
+        with self._lock:
+            state = dict(self._state)
+        state["camera_ok"] = self._running and self.error is None
+        state["error"] = self.error
+        return state
 
     def stop(self) -> None:
         self._running = False
@@ -282,6 +335,16 @@ def create_app(
         return Response(frames(),
                         mimetype="multipart/x-mixed-replace; boundary=emcframe")
 
+    @app.route("/api/live/state")
+    def live_state():
+        """Is a pack in front of the camera, and has it stopped moving?
+
+        Polled a few times a second by the live screen. Deliberately cheap:
+        it reads counters the capture thread has already computed and never
+        touches the pipeline, so an empty counter costs almost nothing.
+        """
+        return jsonify(live_camera.state())
+
     @app.route("/api/scan/frame", methods=["POST"])
     def scan_frame_endpoint():
         """Scan the current preview frame, without disturbing the preview."""
@@ -291,16 +354,22 @@ def create_app(
                 "error": "camera_unavailable",
                 "message": live_camera.error or "No camera frames available.",
             }), 503
+
+        # Refuse to spend a pipeline pass on an empty counter. Without this
+        # the scan returns amber OCR_UNCERTAIN for a pack that is not there,
+        # which on this screen reads as "verify this manually".
+        if not request.args.get("force") and not live_camera.state()["present"]:
+            return jsonify({"idle": True, "reason": "no_package_in_frame"})
+
         try:
             from edgemedicheck.capture import find_package_region
 
             region_ok, bbox, ratio = find_package_region(frame)
-            result = scan_image(
-                frame,
-                capture_meta={"region_ok": region_ok, "bbox": bbox,
-                              "area_ratio": ratio, "source": "live"},
-                db_path=db_path,
-            )
+            meta = {"region_ok": region_ok, "bbox": bbox, "area_ratio": ratio,
+                    "source": "live"}
+            meta.update({k: v for k, v in live_camera.state().items()
+                         if k in ("motion", "steady")})
+            result = scan_image(frame, capture_meta=meta, db_path=db_path)
             return jsonify(_result_payload(result))
         except Exception as exc:  # noqa: BLE001
             log.exception("Live frame scan failed")

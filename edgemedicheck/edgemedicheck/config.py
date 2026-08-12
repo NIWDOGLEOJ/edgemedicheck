@@ -56,6 +56,32 @@ class CaptureConfig:
     # LED ring control (Raspberry Pi only). None disables GPIO entirely.
     led_gpio_pin: int | None = None
 
+    # ---- Hands-free presence detector (live screen) --------------------
+    # The live screen waits for a pack to be presented instead of scanning on
+    # a timer. A full pipeline pass is 0.6-1.3 s on a workstation and several
+    # seconds on a Pi 4, so presence is decided by a separate cheap loop and
+    # scan_image runs once per pack rather than once per interval.
+    #
+    # The detector runs on a downscaled copy: find_package_region does no
+    # internal resize, and area_ratio is scale-invariant, so shrinking costs
+    # nothing but accuracy of the bounding box, which the detector ignores.
+    detector_max_edge: int = 480
+    # Evaluate every Nth grabbed frame. The grab loop already sleeps 0.04 s,
+    # so a stride of 3 gives roughly 8 evaluations/second.
+    detector_stride: int = 3
+    # Mean absolute frame-to-frame difference, 0-255, below which the scene
+    # counts as still. A hand withdrawing from frame is far above this; sensor
+    # noise on a static scene is far below.
+    motion_threshold: float = 2.5
+    # Consecutive detector frames needed before a state change is believed.
+    # Debouncing stops a single noisy frame from triggering a scan or dropping
+    # a held verdict.
+    frames_to_confirm_present: int = 2
+    frames_to_confirm_absent: int = 4
+    # Consecutive still frames required before scanning, so the pack is
+    # scanned once it has been set down rather than while it is moving.
+    frames_to_confirm_steady: int = 2
+
 
 # --------------------------------------------------------------------------
 # Preprocessing

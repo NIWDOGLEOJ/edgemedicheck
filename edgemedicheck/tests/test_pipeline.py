@@ -989,5 +989,171 @@ class TestLanAddress(unittest.TestCase):
             subprocess.run = real_run
 
 
+# ==========================================================================
+# Hands-free presence detection (live screen)
+# ==========================================================================
+
+
+class TestPresenceDetector(unittest.TestCase):
+    """The live screen waits for a pack instead of scanning on a timer.
+
+    A full pipeline pass costs 0.6-1.3 s on a workstation and several seconds
+    on a Pi 4, so these decisions determine both what the pharmacist sees and
+    how much CPU is burned at an empty counter. Two failures matter: firing a
+    scan when nothing is there (which reports amber -- "verify manually" --
+    about a pack that does not exist), and dropping a verdict that is still
+    being read.
+    """
+
+    def setUp(self):
+        import cv2
+
+        from edgemedicheck.capture import PresenceDetector
+
+        self.cv2 = cv2
+        self.det = PresenceDetector()
+
+    def _empty(self):
+        return np.full((720, 1280, 3), 30, np.uint8)
+
+    def _pack(self):
+        frame = self._empty()
+        self.cv2.rectangle(frame, (300, 150), (980, 560), (240, 240, 235), -1)
+        return frame
+
+    def _feed(self, frame, times=1):
+        state = None
+        for _ in range(times):
+            state = self.det.update(frame)
+        return state
+
+    def test_empty_scene_is_never_ready(self):
+        state = self._feed(self._empty(), 6)
+        self.assertFalse(state["present"])
+        self.assertFalse(state["ready"])
+
+    def test_pack_becomes_ready_once_it_settles(self):
+        self._feed(self._empty(), 3)
+        # The frame in which the pack arrives is, by definition, a changed
+        # frame: present may latch, but it must not be ready yet.
+        first = self._feed(self._pack(), 1)
+        self.assertFalse(first["ready"])
+        settled = self._feed(self._pack(), 4)
+        self.assertTrue(settled["present"])
+        self.assertTrue(settled["steady"])
+        self.assertTrue(settled["ready"])
+
+    def test_not_ready_while_the_scene_keeps_changing(self):
+        """A pack still being moved into place must not be scanned.
+
+        The displacement here is deliberately large. A pack nudged by a few
+        pixels genuinely is settled as far as motion blur is concerned, so
+        the threshold is meant to ignore it.
+        """
+        self._feed(self._empty(), 3)
+        state = None
+        for i in range(6):
+            frame = self._empty()
+            x = 120 + i * 130
+            self.cv2.rectangle(frame, (x, 150), (x + 620, 560),
+                               (240, 240, 235), -1)
+            state = self.det.update(frame)
+            self.assertFalse(state["ready"], f"ready while moving at step {i}")
+        self.assertFalse(state["ready"])
+
+    def test_removing_the_pack_returns_to_idle(self):
+        self._feed(self._empty(), 3)
+        self._feed(self._pack(), 5)
+        state = self._feed(self._empty(), 6)
+        self.assertFalse(state["present"])
+        self.assertFalse(state["ready"])
+
+    def test_ready_drops_immediately_when_the_pack_leaves(self):
+        """`present` deliberately lags, to debounce. `ready` must not.
+
+        Otherwise a scan can fire at an empty counter in the few frames
+        between the pack being lifted and `present` catching up.
+        """
+        self._feed(self._empty(), 3)
+        self._feed(self._pack(), 5)
+        after = self.det.update(self._empty())
+        self.assertTrue(after["present"])      # still debouncing
+        self.assertFalse(after["ready"])       # but not scannable
+
+    def test_single_stray_frame_does_not_flip_presence(self):
+        self._feed(self._empty(), 6)
+        state = self._feed(self._pack(), 1)
+        self.assertFalse(state["present"])
+
+    def test_area_ratio_is_scale_invariant(self):
+        """The detector downscales for speed; the presence decision must not
+        change because of it."""
+        from edgemedicheck.capture import find_package_region
+
+        full = self._pack()
+        small = self.cv2.resize(full, (480, 270), interpolation=self.cv2.INTER_AREA)
+        _, _, ratio_full = find_package_region(full)
+        _, _, ratio_small = find_package_region(small)
+        self.assertAlmostEqual(ratio_full, ratio_small, places=2)
+
+
+class TestLiveStateEndpoint(unittest.TestCase):
+    """The live screen polls this several times a second, so it must stay
+    cheap and must never run the pipeline."""
+
+    def _client(self, folder):
+        import app as flask_app
+
+        application = flask_app.create_app(
+            db_path=self.db_path, folder=folder, backend="folder"
+        )
+        application.config["TESTING"] = True
+        return application.test_client()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmp.name) / "t.sqlite3")
+        db.init_db(self.db_path)
+
+        import cv2
+
+        self.empty_dir = Path(self.tmp.name) / "empty"
+        self.pack_dir = Path(self.tmp.name) / "pack"
+        for d in (self.empty_dir, self.pack_dir):
+            d.mkdir()
+        blank = np.full((720, 1280, 3), 30, np.uint8)
+        pack = blank.copy()
+        cv2.rectangle(pack, (300, 150), (980, 560), (240, 240, 235), -1)
+        for i in range(4):
+            cv2.imwrite(str(self.empty_dir / f"{i}.jpg"), blank)
+            cv2.imwrite(str(self.pack_dir / f"{i}.jpg"), pack)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_state_reports_the_documented_keys(self):
+        client = self._client(str(self.pack_dir))
+        body = client.get("/api/live/state").get_json()
+        for key in ("present", "steady", "ready", "area_ratio", "camera_ok"):
+            self.assertIn(key, body)
+
+    def test_scan_is_refused_at_an_empty_counter(self):
+        """Without this gate an empty frame is put through OCR and comes back
+        amber, which on the live screen reads as a warning about a pack that
+        is not there."""
+        client = self._client(str(self.empty_dir))
+        client.get("/api/live/state")          # let the detector see a frame
+        body = client.post("/api/scan/frame").get_json()
+        self.assertTrue(body.get("idle"))
+        self.assertEqual(body.get("reason"), "no_package_in_frame")
+
+    def test_force_overrides_the_gate(self):
+        """The operator can always demand a reading of whatever is in view."""
+        client = self._client(str(self.empty_dir))
+        body = client.post("/api/scan/frame?force=1").get_json()
+        self.assertNotIn("idle", body)
+        self.assertIn("verdict", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
