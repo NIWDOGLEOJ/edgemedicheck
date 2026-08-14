@@ -11,6 +11,7 @@ Subcommands
     evaluate  Score the pipeline against a ground-truth manifest.
     stats     Show scan-log statistics.
     products  List batch records in the local database.
+    light     Test the GPIO colour status light.
     serve     Start the Flask pharmacist interface.
 
 Examples
@@ -21,6 +22,7 @@ Examples
     python run.py scan --live
     python run.py batch data/images --limit 20
     python run.py evaluate data/images/manifest.json
+    python run.py light
     python run.py serve
 """
 
@@ -1143,6 +1145,83 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# light
+# --------------------------------------------------------------------------
+
+
+def cmd_light(args: argparse.Namespace) -> int:
+    """Exercise the GPIO status light so wiring can be checked without a scan.
+
+    Worth having as its own command: if the light is miswired, every scan
+    afterwards reports the wrong colour, and a pharmacist has no way to tell
+    that from a wrong verdict.
+    """
+    import time
+
+    from edgemedicheck.statuslight import get_status_light
+
+    cfg = CONFIG.status_light
+    if not cfg.enabled:
+        print("No status light configured.\n")
+        print("Wire a common-cathode RGB LED (each leg through its own 220R")
+        print("resistor) to the GPIO header, then set the BCM pin numbers:\n")
+        print("    export EMC_LIGHT_RED_PIN=17")
+        print("    export EMC_LIGHT_GREEN_PIN=27")
+        print("    export EMC_LIGHT_BLUE_PIN=22      # optional")
+        print("    export EMC_LIGHT_COMMON_ANODE=1   # only for common-anode\n")
+        print("Red and green are the minimum; blue only adds the "
+              "'scanning' colour.")
+        return 1
+
+    light = get_status_light()
+    print(f"Pins (BCM): red={cfg.red_pin} green={cfg.green_pin} "
+          f"blue={cfg.blue_pin}")
+    print(f"Wiring:     {'common anode' if cfg.common_anode else 'common cathode'}"
+          f", PWM {'on' if cfg.pwm else 'off'}")
+    print(f"Driver:     {light.backend}")
+    print()
+
+    if not light.available:
+        print(_c("Pins are set but no GPIO library could drive them.", "red"))
+        print("On Raspberry Pi OS:  pip install RPi.GPIO   (or: pip install gpiozero)")
+        print("On a Pi 5 use gpiozero -- RPi.GPIO cannot drive its GPIO block.")
+        return 1
+
+    if args.off:
+        light.off()
+        print("Light off.")
+        return 0
+
+    steps = (
+        [(args.state, args.seconds)]
+        if args.state
+        else [("scanning", 3.0), ("green", 2.0), ("yellow", 2.0),
+              ("red", 3.0), ("error", 2.0)]
+    )
+
+    try:
+        for state, seconds in steps:
+            label = (_badge(state) if state in ("green", "yellow", "red")
+                     else f" {state.upper():^7} ")
+            print(f"  {label}  {seconds:g}s")
+            if state == "scanning":
+                light.scanning()
+            elif state == "error":
+                light.error()
+            else:
+                light.verdict(state)
+            time.sleep(seconds)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        light.off()
+
+    print("\nIf a colour came out wrong, the channels are swapped: check which "
+          "pin\ngoes to which leg of the LED.")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Argument parsing
 # --------------------------------------------------------------------------
 
@@ -1242,6 +1321,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", default=None, help="write a JSON report here")
     p.add_argument("--show-failures", action="store_true")
     p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("light", help="test the GPIO status light")
+    p.add_argument("state", nargs="?",
+                   choices=["scanning", "green", "yellow", "red", "error"],
+                   help="hold one state instead of cycling through all of them")
+    p.add_argument("--seconds", type=float, default=5.0,
+                   help="how long to hold a single state")
+    p.add_argument("--off", action="store_true", help="turn the light off")
+    p.set_defaults(func=cmd_light)
 
     p = sub.add_parser("stats", help="scan-log statistics")
     p.set_defaults(func=cmd_stats)

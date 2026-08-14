@@ -26,6 +26,7 @@ from .fusion import GREEN, RED, YELLOW, Verdict, fuse
 from .ocr import OCRResult, run_ocr
 from .pipeline import ScanResult, scan_from_file, scan_image, scan_live
 from .preprocess import preprocess
+from .statuslight import StatusLight, get_status_light
 
 __version__ = "1.0.0"
 
@@ -38,7 +39,9 @@ __all__ = [
     "Verdict",
     "OCRResult",
     "ScanResult",
+    "StatusLight",
     "fuse",
+    "get_status_light",
     "init_db",
     "preprocess",
     "recent_scans",

@@ -34,6 +34,7 @@ from .config import CAPTURE_DIR, CONFIG, Config
 from .fusion import MIN_SHARPNESS, Verdict, fuse
 from .ocr import OCRResult, run_ocr
 from .preprocess import ProcessedImage, preprocess
+from .statuslight import StatusLight, get_status_light
 
 log = logging.getLogger(__name__)
 
@@ -135,12 +136,41 @@ def scan_image(
     capture_meta: dict[str, Any] | None = None,
     db_path: Path | str | None = None,
     write_log: bool = True,
+    status_light: StatusLight | None = None,
 ) -> ScanResult:
     """Run the full pipeline on one already-captured BGR frame.
 
     This is the function used both by the live UI and by offline batch
     evaluation, so the two paths cannot drift apart.
+
+    The GPIO status light is driven from here rather than from each caller,
+    so the colour follows the verdict identically whether the scan came from
+    the web UI, the CLI, or a batch run. It is inert unless pins are
+    configured, so nothing changes off a Raspberry Pi.
     """
+    light = status_light if status_light is not None else get_status_light()
+    light.scanning()
+    try:
+        return _run_pipeline(
+            frame, cfg, today, save_image, capture_meta, db_path, write_log, light
+        )
+    except Exception:
+        # A crash is not a verdict. Say "something went wrong" rather than
+        # leaving the light pulsing as though the scan were still running.
+        light.error()
+        raise
+
+
+def _run_pipeline(
+    frame: np.ndarray,
+    cfg: Config | None,
+    today: date | None,
+    save_image: bool,
+    capture_meta: dict[str, Any] | None,
+    db_path: Path | str | None,
+    write_log: bool,
+    light: StatusLight,
+) -> ScanResult:
     cfg = cfg or CONFIG
     today = today or date.today()
     timer = _Timer()
@@ -293,6 +323,11 @@ def scan_image(
             crosscheck=crosscheck,
         )
 
+    # Show the colour as soon as the verdict exists. Writing the capture JPEG
+    # and the audit row is tens of milliseconds the pharmacist should not be
+    # staring at a "still scanning" light for.
+    light.verdict(verdict.verdict)
+
     # -- Persist ----------------------------------------------------------
     image_path: str | None = None
     if save_image:
@@ -384,6 +419,7 @@ def scan_from_file(
     db_path: Path | str | None = None,
     write_log: bool = True,
     save_image: bool = False,
+    status_light: StatusLight | None = None,
 ) -> ScanResult:
     """Scan a single image file. Used for evaluation over a labelled dataset."""
     frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
@@ -404,6 +440,7 @@ def scan_from_file(
         },
         db_path=db_path,
         write_log=write_log,
+        status_light=status_light,
     )
 
 
@@ -413,10 +450,20 @@ def scan_live(
     led: LEDController | None = None,
     today: date | None = None,
     db_path: Path | str | None = None,
+    status_light: StatusLight | None = None,
 ) -> ScanResult:
     """Capture from the camera and run the full pipeline."""
     cfg = cfg or CONFIG
-    frame, meta = capture_scan(source, led)
+    light = status_light if status_light is not None else get_status_light()
+    # Capture retries and sensor warm-up happen before the pipeline starts, so
+    # the light has to go busy here or it would still show the previous
+    # verdict while a new pack is being photographed.
+    light.scanning()
+    try:
+        frame, meta = capture_scan(source, led)
+    except Exception:
+        light.error()
+        raise
     return scan_image(
         frame,
         cfg=cfg,
@@ -424,4 +471,5 @@ def scan_live(
         save_image=True,
         capture_meta=meta,
         db_path=db_path,
+        status_light=light,
     )

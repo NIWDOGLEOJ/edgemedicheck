@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -1095,6 +1096,245 @@ class TestLanAddress(unittest.TestCase):
 
 
 # ==========================================================================
+# GPIO status light
+# ==========================================================================
+
+
+class _FakeBackend:
+    """Stands in for the GPIO header, recording every level written."""
+
+    name = "fake"
+    active = True
+
+    def __init__(self):
+        self.writes = []
+        self.closed = False
+
+    def set(self, colour):
+        self.writes.append(colour)
+
+    def close(self):
+        self.closed = True
+
+    @property
+    def last(self):
+        return self.writes[-1] if self.writes else None
+
+
+class _FailingBackend(_FakeBackend):
+    name = "failing"
+
+    def set(self, colour):
+        raise OSError("GPIO went away")
+
+
+class TestStatusLight(unittest.TestCase):
+    """The light is what the pharmacist actually looks at, so a wrong colour
+    is a wrong answer -- and a broken LED must never break a scan."""
+
+    def _light(self, backend=None, **overrides):
+        from edgemedicheck.config import StatusLightConfig
+        from edgemedicheck.statuslight import StatusLight
+
+        cfg = StatusLightConfig(red_pin=17, green_pin=27, blue_pin=22,
+                                **overrides)
+        return StatusLight(cfg, backend=backend or _FakeBackend())
+
+    def test_disabled_without_pins(self):
+        from edgemedicheck.config import StatusLightConfig
+        from edgemedicheck.statuslight import StatusLight
+
+        cfg = StatusLightConfig(red_pin=None, green_pin=None, blue_pin=None)
+        self.assertFalse(cfg.enabled)
+        light = StatusLight(cfg)
+        self.assertFalse(light.available)
+        self.assertEqual(light.backend, "none")
+        # Every call still has to be safe on a laptop.
+        light.scanning()
+        light.verdict("green")
+        light.error()
+        light.close()
+
+    def test_blue_is_optional(self):
+        from edgemedicheck.config import StatusLightConfig
+
+        self.assertTrue(
+            StatusLightConfig(red_pin=17, green_pin=27, blue_pin=None).enabled
+        )
+        self.assertFalse(
+            StatusLightConfig(red_pin=17, green_pin=None, blue_pin=22).enabled
+        )
+
+    def test_green_verdict_is_solid_green(self):
+        backend = _FakeBackend()
+        light = self._light(backend)
+        try:
+            light.verdict("green")
+            self.assertEqual(backend.last, (0.0, 1.0, 0.0))
+            self.assertEqual(light.state, "green")
+        finally:
+            light.close()
+
+    def test_yellow_is_amber_not_pure_yellow(self):
+        backend = _FakeBackend()
+        light = self._light(backend)
+        try:
+            light.verdict("yellow")
+            r, g, b = backend.last
+            self.assertEqual((r, b), (1.0, 0.0))
+            self.assertLess(g, 1.0)
+            self.assertGreater(g, 0.0)
+        finally:
+            light.close()
+
+    def test_amber_stays_distinct_from_red_without_pwm(self):
+        """On a plain on/off LED, rounding amber at 50% would drop its green
+        channel and show YELLOW ("verify") as RED ("do not dispense")."""
+        from edgemedicheck.statuslight import C_AMBER, C_GREEN, C_RED, _digital
+
+        self.assertEqual([_digital(c) for c in C_AMBER], [True, True, False])
+        self.assertEqual([_digital(c) for c in C_RED], [True, False, False])
+        self.assertEqual([_digital(c) for c in C_GREEN], [False, True, False])
+
+    def test_red_blinks(self):
+        """Motion is the redundant channel for red/green colour blindness."""
+        backend = _FakeBackend()
+        light = self._light(backend)
+        try:
+            light.verdict("red")
+            time.sleep(0.9)
+            self.assertIn((1.0, 0.0, 0.0), backend.writes)
+            self.assertIn((0.0, 0.0, 0.0), backend.writes)
+        finally:
+            light.close()
+
+    def test_red_can_be_made_solid(self):
+        backend = _FakeBackend()
+        light = self._light(backend, blink_red=False)
+        try:
+            light.verdict("red")
+            time.sleep(0.3)
+            self.assertEqual(set(backend.writes), {(1.0, 0.0, 0.0)})
+        finally:
+            light.close()
+
+    def test_changing_state_stops_the_previous_animation(self):
+        backend = _FakeBackend()
+        light = self._light(backend)
+        try:
+            light.verdict("red")
+            time.sleep(0.2)
+            light.verdict("green")
+            count = len(backend.writes)
+            time.sleep(0.5)
+            # Green is solid: nothing further should be written.
+            self.assertEqual(len(backend.writes), count)
+            self.assertEqual(backend.last, (0.0, 1.0, 0.0))
+        finally:
+            light.close()
+
+    def test_scanning_is_not_restarted_while_already_scanning(self):
+        light = self._light()
+        try:
+            light.scanning()
+            thread = light._thread
+            light.scanning()
+            self.assertIs(light._thread, thread)
+        finally:
+            light.close()
+
+    def test_unknown_verdict_shows_the_error_state(self):
+        light = self._light()
+        try:
+            light.verdict("purple")
+            self.assertEqual(light.state, "error")
+        finally:
+            light.close()
+
+    def test_hold_returns_to_idle(self):
+        backend = _FakeBackend()
+        light = self._light(backend, verdict_hold_seconds=0.2)
+        try:
+            light.verdict("green")
+            time.sleep(0.5)
+            self.assertEqual(light.state, "idle")
+            self.assertEqual(backend.last, (0.0, 0.0, 0.0))
+        finally:
+            light.close()
+
+    def test_zero_hold_keeps_the_verdict_lit(self):
+        backend = _FakeBackend()
+        light = self._light(backend, verdict_hold_seconds=0.0)
+        try:
+            light.verdict("green")
+            time.sleep(0.3)
+            self.assertEqual(light.state, "green")
+            self.assertEqual(backend.last, (0.0, 1.0, 0.0))
+        finally:
+            light.close()
+
+    def test_brightness_scales_the_channels(self):
+        backend = _FakeBackend()
+        light = self._light(backend, brightness=0.5)
+        try:
+            light.verdict("green")
+            self.assertEqual(backend.last, (0.0, 0.5, 0.0))
+        finally:
+            light.close()
+
+    def test_gpio_failure_disables_the_light_without_raising(self):
+        light = self._light(_FailingBackend())
+        try:
+            light.verdict("red")
+            self.assertFalse(light.available)
+            # And a second call must stay quiet rather than retrying forever.
+            light.verdict("green")
+        finally:
+            light.close()
+
+    def test_close_turns_the_light_off(self):
+        backend = _FakeBackend()
+        light = self._light(backend)
+        light.verdict("red")
+        light.close()
+        self.assertEqual(backend.last, (0.0, 0.0, 0.0))
+        self.assertTrue(backend.closed)
+        self.assertFalse(light.available)
+
+    def test_pipeline_drives_the_light(self):
+        """A scan must leave the light showing that scan's verdict."""
+        from edgemedicheck.pipeline import scan_image
+
+        backend = _FakeBackend()
+        light = self._light(backend)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "t.sqlite3"
+        db.init_db(db_path)
+
+        frame = np.full((240, 320, 3), 200, dtype=np.uint8)
+        try:
+            result = scan_image(frame, save_image=False, db_path=db_path,
+                                status_light=light)
+            self.assertEqual(light.state, result.verdict.verdict)
+        finally:
+            light.close()
+
+    def test_pipeline_failure_shows_the_error_state(self):
+        """A crash is not a verdict, and must not be shown as one."""
+        from edgemedicheck.pipeline import scan_image
+
+        light = self._light()
+        try:
+            with self.assertRaises(Exception):
+                # Not an image: preprocessing fails inside the pipeline.
+                scan_image("not a frame", save_image=False, status_light=light)
+            self.assertEqual(light.state, "error")
+        finally:
+            light.close()
+
+
+# ==========================================================================
 # Hands-free presence detection (live screen)
 # ==========================================================================
 
@@ -1258,6 +1498,35 @@ class TestLiveStateEndpoint(unittest.TestCase):
         body = client.post("/api/scan/frame?force=1").get_json()
         self.assertNotIn("idle", body)
         self.assertIn("verdict", body)
+
+    def test_taking_the_pack_away_clears_the_status_light(self):
+        """The panel goes neutral when the counter empties. The GPIO light has
+        to go with it, or it keeps asserting a verdict about a pack that is no
+        longer there."""
+        import app as flask_app
+
+        from edgemedicheck import statuslight
+
+        calls = []
+        real_get = statuslight.get_status_light
+
+        class FakeLight:
+            def off(self):
+                calls.append("off")
+
+        flask_app.get_status_light = lambda: FakeLight()
+        try:
+            camera = flask_app.LiveCamera(backend="folder", folder=str(self.empty_dir))
+            camera._presence_changed(True, False)
+            self.assertEqual(calls, ["off"])
+
+            # Arriving, and staying, must not clear a verdict being read.
+            calls.clear()
+            camera._presence_changed(False, True)
+            camera._presence_changed(True, True)
+            self.assertEqual(calls, [])
+        finally:
+            flask_app.get_status_light = real_get
 
 
 if __name__ == "__main__":

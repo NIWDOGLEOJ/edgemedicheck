@@ -36,6 +36,7 @@ from edgemedicheck.capture import (
 from edgemedicheck.cnn import get_authenticator
 from edgemedicheck.config import CONFIG
 from edgemedicheck.pipeline import ScanResult, scan_image
+from edgemedicheck.statuslight import get_status_light
 
 log = logging.getLogger(__name__)
 
@@ -192,7 +193,11 @@ class LiveCamera:
                     if self._tick % max(1, CONFIG.capture.detector_stride) == 0:
                         state = self._detector.update(frame)
                         with self._lock:
+                            was_present = bool(self._state.get("present"))
                             self._state = state
+                        self._presence_changed(
+                            was_present, bool(state.get("present"))
+                        )
                 # The pipeline is far slower than the sensor; there is nothing
                 # to gain from grabbing faster than the preview can show.
                 time.sleep(0.04)
@@ -205,9 +210,23 @@ class LiveCamera:
                     pass
                 self._source = None
 
+    def _presence_changed(self, was_present: bool, now_present: bool) -> None:
+        """Clear the status light once the pack has been taken away.
+
+        The panel returns to a neutral idle state when the counter empties, and
+        the GPIO light has to follow it. A verdict left lit over an empty
+        counter is a claim about a pack that is not there -- the same failure
+        the presence gate exists to prevent on screen.
+        """
+        if was_present and not now_present:
+            get_status_light().off()
+
     def _fail(self, message: str) -> None:
         """Record a failure and hold off before the next attempt."""
         self.error = message
+        # The camera is gone, so nothing here can still vouch for the verdict
+        # the light is showing.
+        get_status_light().off()
         self._running = False
         self._retry_at = time.monotonic() + self._retry_delay
         self._retry_delay = min(self._retry_delay * 2, self.RETRY_MAX)
@@ -546,9 +565,13 @@ def create_app(
     def health():
         auth = get_authenticator()
         calib = auth.calibration
+        light = get_status_light()
         return jsonify({
             "status": "ok",
             "visual_backend": auth.backend,
+            # Reported so a deployment check can tell "no light fitted" apart
+            # from "light fitted but its GPIO driver never loaded".
+            "status_light": light.backend,
             "model_backed": auth.is_model_backed,
             "calibration_groups": sorted(calib.groups) if calib else [],
             "products": db.count_products(db_path),

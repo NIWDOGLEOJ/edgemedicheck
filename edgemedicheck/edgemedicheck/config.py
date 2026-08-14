@@ -83,6 +83,54 @@ class CaptureConfig:
     frames_to_confirm_steady: int = 2
 
 
+def _env_pin(name: str) -> int | None:
+    """Read a BCM pin number from the environment. Empty or unset -> disabled."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{name}={raw!r} is not a GPIO pin number. Set it to a BCM pin "
+            f"(for example {name}=17), or leave it unset to disable the "
+            f"status light."
+        ) from None
+
+
+@dataclass
+class StatusLightConfig:
+    """RGB verdict light on the GPIO header (see statuslight.py).
+
+    Pins are BCM numbers. Red and green are the minimum -- they carry the
+    verdict; blue only adds the "scanning" state. With no pins set the light
+    is inert and the pipeline runs unchanged, which is how the same code runs
+    on a laptop.
+    """
+
+    red_pin: int | None = _env_pin("EMC_LIGHT_RED_PIN")
+    green_pin: int | None = _env_pin("EMC_LIGHT_GREEN_PIN")
+    blue_pin: int | None = _env_pin("EMC_LIGHT_BLUE_PIN")
+    # A common-anode LED sinks through the pin, so every level is inverted.
+    common_anode: bool = os.environ.get("EMC_LIGHT_COMMON_ANODE", "0") == "1"
+    # PWM buys the amber mix and the pulse. Turn it off for plain on/off LEDs.
+    pwm: bool = os.environ.get("EMC_LIGHT_PWM", "1") != "0"
+    pwm_frequency_hz: int = 200
+    brightness: float = float(os.environ.get("EMC_LIGHT_BRIGHTNESS", "1.0"))
+    # Red blinks so the stop state is distinguishable without colour vision.
+    blink_red: bool = True
+    # How long a verdict stays lit. 0 holds it until the next scan starts,
+    # which is what a counter device wants: the light still reads the last
+    # result while the pharmacist puts the pack down.
+    verdict_hold_seconds: float = float(
+        os.environ.get("EMC_LIGHT_HOLD_SECONDS", "0")
+    )
+
+    @property
+    def enabled(self) -> bool:
+        return self.red_pin is not None and self.green_pin is not None
+
+
 # --------------------------------------------------------------------------
 # Preprocessing
 # --------------------------------------------------------------------------
@@ -222,6 +270,7 @@ class WebConfig:
 @dataclass
 class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    status_light: StatusLightConfig = field(default_factory=StatusLightConfig)
     preprocess: PreprocessConfig = field(default_factory=PreprocessConfig)
     ocr: OCRConfig = field(default_factory=OCRConfig)
     barcode: BarcodeConfig = field(default_factory=BarcodeConfig)
