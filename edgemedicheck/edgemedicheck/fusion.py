@@ -67,6 +67,7 @@ R_OCR_UNCERTAIN = "OCR_UNCERTAIN"
 R_VISUAL_BORDERLINE = "VISUAL_BORDERLINE"
 R_CAPTURE_POOR = "POOR_CAPTURE"
 R_NO_MODEL = "NO_TRAINED_MODEL"
+R_VISUAL_ABSTAINED = "VISUAL_ABSTAINED"
 R_OK = "OK"
 
 # Plain-language text shown alongside each code.
@@ -87,6 +88,8 @@ REASON_TEXT = {
     R_VISUAL_BORDERLINE: "Package appearance is borderline.",
     R_CAPTURE_POOR: "Image quality was too low for a reliable check.",
     R_NO_MODEL: "Visual check ran without a trained model.",
+    R_VISUAL_ABSTAINED: "Visual check was skipped: the capture was not good "
+                        "enough to judge appearance from.",
     R_OK: "No issue detected.",
 }
 
@@ -110,6 +113,7 @@ SEVERITY = {
     R_NEAR_EXPIRY: 40,
     R_NO_CODE: 12,
     R_NO_MODEL: 10,
+    R_VISUAL_ABSTAINED: 12,
     R_CODE_AGREE: 5,
     R_OK: 0,
 }
@@ -308,15 +312,22 @@ def fuse(
     # a safety decision. The OCR and database checks remain fully valid, so a
     # clean pack can still reach GREEN -- with the limitation disclosed.
     if not visual.usable:
-        findings.append(
-            Finding(
-                R_NO_MODEL,
-                INFO,
-                "Visual authenticity check did not run: no trained CNN and no "
-                "reference calibration. Expiry and batch checks were still "
-                "applied.",
+        # Two different reasons to abstain, and they are not interchangeable:
+        # nothing to run, versus a model that declined to judge a capture it
+        # was not given a fair look at. Reporting the second as the first
+        # would tell a pharmacist no model is deployed when one is.
+        if visual.notes:
+            findings.append(Finding(R_VISUAL_ABSTAINED, INFO, visual.notes[0]))
+        else:
+            findings.append(
+                Finding(
+                    R_NO_MODEL,
+                    INFO,
+                    "Visual authenticity check did not run: no trained CNN and "
+                    "no reference calibration. Expiry and batch checks were "
+                    "still applied.",
+                )
             )
-        )
     else:
         if visual.suspicion_score >= cnn_cfg.suspicion_threshold:
             if visual.is_model_backed:

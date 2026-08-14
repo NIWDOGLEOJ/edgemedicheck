@@ -121,7 +121,7 @@ edgemedicheck/
 │   └── train_cnn.py              MobileNetV2 transfer learning + TFLite export
 ├── templates/index.html          Self-contained UI (no external assets)
 ├── docs/led-wiring.svg           Status light wiring diagram
-├── tests/test_pipeline.py        112 tests
+├── tests/test_pipeline.py        128 tests
 └── data/                         Database, images, models (created at runtime)
 ```
 
@@ -205,17 +205,30 @@ reason, and falls back to the OCR value if the encoded one is not on file.
 | Tier | Symbologies | Install |
 |---|---|---|
 | OpenCV | QR, EAN/UPC/Code128 | built in — nothing to install |
-| pyzbar | broader 1D | `pip install pyzbar` + `libzbar0` |
-| pylibdmtx | **GS1 DataMatrix** | `pip install pylibdmtx` + `libdmtx0b` |
+| pyzbar | broader 1D | `pip install pyzbar` + `libzbar0t64` |
+| pylibdmtx | **GS1 DataMatrix** | `pip install pylibdmtx` + `libdmtx0t64` |
 
 OpenCV covers QR codes with no extra system libraries, which keeps the
 Raspberry Pi install simple. DataMatrix is the symbology most often used on
 pharmaceutical cartons, so install `pylibdmtx` where you expect it:
 
 ```bash
-sudo apt install libdmtx0b
+sudo apt install libdmtx0t64
 pip install pylibdmtx
 ```
+
+> **Package names.** Debian 13 (trixie) and Ubuntu 24.04 onwards renamed
+> these libraries for the 64-bit `time_t` transition: `libdmtx0b` became
+> `libdmtx0t64` and `libzbar0` became `libzbar0t64`. Raspberry Pi OS built
+> on trixie carries the new names, and the old ones resolve to nothing. On
+> Debian 12 (bookworm) and earlier, use `libdmtx0b` and `libzbar0`.
+
+> **Latency.** DataMatrix search runs to its full `dmtx_timeout_ms` on every
+> preprocessed variant when the pack carries no 2D code, so enabling
+> `pylibdmtx` costs roughly `dmtx_timeout_ms x max_variants` per scan in
+> that case -- measured at +4.7 s on a Raspberry Pi 4 with the defaults.
+> Lower `dmtx_timeout_ms`, or set `EMC_BARCODE=0`, if you are working with
+> stock that has no DataMatrix on it.
 
 Disable the stage entirely with `EMC_BARCODE=0` if the latency budget is tight
 — DataMatrix search is the slowest step in the pipeline and is bounded by
@@ -523,6 +536,14 @@ Everything tunable lives in `edgemedicheck/config.py`. Environment overrides:
 | `EMC_LIGHT_PWM` | `0` for plain on/off LEDs (no amber mixing, no pulse) |
 | `EMC_LIGHT_BRIGHTNESS` | Overall level, `0.0`–`1.0` (PWM only) |
 | `EMC_LIGHT_HOLD_SECONDS` | Seconds to hold a verdict; `0` holds until the next scan |
+| `EMC_BARCODE` | `0` disables the barcode stage entirely |
+| `EMC_DMTX_TIMEOUT_MS` | DataMatrix search budget per variant (default 1500) |
+| `EMC_BARCODE_MAX_VARIANTS` | Preprocessed variants to try before giving up (default 3) |
+
+A pack with no 2D code costs `EMC_DMTX_TIMEOUT_MS x EMC_BARCODE_MAX_VARIANTS`
+before the search gives up, so on a Raspberry Pi the default 1500 ms turns a
+6.7 s scan into a 13.2 s one. Lower it where the stock you handle does not
+carry DataMatrix.
 
 ---
 
@@ -569,7 +590,7 @@ Latency  mean 758 ms  min 593  max 1292
 python tests/test_pipeline.py
 ```
 
-112 tests covering date parsing across Indian label formats, GS1 element-string
+128 tests covering date parsing across Indian label formats, GS1 element-string
 parsing, barcode/text cross-checking, database verification precedence,
 decision fusion, preprocessing, calibration scoping, dataset splitting, schema
 migration, the GPIO status light, and LAN address detection.

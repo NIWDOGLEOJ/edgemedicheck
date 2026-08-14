@@ -9,7 +9,11 @@ Backends, selected automatically in this order:
   1. tflite    -- TFLite interpreter over package_authenticity.tflite. This is
                   the deployment path on the Raspberry Pi 4.
   2. keras     -- full TensorFlow. Development on a workstation.
-  3. heuristic -- no trained model available. Falls back to a reference-
+  3. torch     -- a torchvision ResNet-18 checkpoint, as produced by
+                  `model training/train_model.py`. Heavier than TFLite, but it
+                  runs the trained weights exactly as they were validated,
+                  with no conversion step to go wrong.
+  4. heuristic -- no trained model available. Falls back to a reference-
                   calibrated anomaly score over classical image cues.
 
 Why the heuristic backend is built the way it is
@@ -36,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -49,6 +54,11 @@ log = logging.getLogger(__name__)
 
 CALIBRATION_PATH = MODEL_DIR / "heuristic_calibration.json"
 
+# Backends that run trained weights, as opposed to the classical-cue
+# fallback. Kept in one place: callers used to spell this tuple out inline,
+# so adding a backend updated some of them and silently missed others.
+MODEL_BACKENDS = ("tflite", "keras", "torch")
+
 # Minimum reference images before a calibration is trustworthy. Below this the
 # fitted standard deviations are too noisy to threshold against.
 MIN_CALIBRATION_SAMPLES = 12
@@ -59,7 +69,7 @@ class VisualResult:
     """Output of the visual authentication stage."""
 
     suspicion_score: float  # 0 = looks genuine, 1 = looks suspicious
-    backend: str  # "tflite" | "keras" | "heuristic"
+    backend: str  # "tflite" | "keras" | "torch" | "heuristic"
     label: str  # "genuine" | "suspicious" | "unknown"
     usable: bool = True  # False -> fusion must ignore this stream
     cues: dict[str, float] = field(default_factory=dict)
@@ -68,7 +78,7 @@ class VisualResult:
 
     @property
     def is_model_backed(self) -> bool:
-        return self.backend in ("tflite", "keras")
+        return self.backend in MODEL_BACKENDS
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -596,6 +606,17 @@ def score_against(
 class VisualAuthenticator:
     """Loads the best available backend once and reuses it across scans."""
 
+    @property
+    def is_model_backed(self) -> bool:
+        """Whether a trained model is driving the visual stream.
+
+        Callers guarded this with `hasattr`, which quietly meant "no" because
+        the property only existed on VisualResult. The web index page read
+        its "visual ready" flag from that guard, so it never reflected a
+        loaded model regardless of backend.
+        """
+        return self.backend in MODEL_BACKENDS
+
     def __init__(
         self,
         cfg: CNNConfig | None = None,
@@ -605,6 +626,9 @@ class VisualAuthenticator:
         self.backend = "heuristic"
         self._interpreter = None
         self._keras = None
+        self._torch = None
+        self._torch_classes: list[str] = []
+        self._torch_suspicious_index = 0
         self._input_details = None
         self._output_details = None
         self.calibration = CalibrationSet.load(calibration_path)
@@ -620,6 +644,15 @@ class VisualAuthenticator:
         if self._try_keras():
             self.backend = "keras"
             log.info("Visual authenticator: Keras backend")
+            return
+        if self._try_torch():
+            self.backend = "torch"
+            log.info(
+                "Visual authenticator: PyTorch backend (classes %s, "
+                "suspicious = column %d)",
+                self._torch_classes,
+                self._torch_suspicious_index,
+            )
             return
 
         self.backend = "heuristic"
@@ -681,6 +714,62 @@ class VisualAuthenticator:
             log.warning("Failed to load Keras model: %s", exc)
             return False
 
+    # Class names that mean "this pack is not genuine". The checkpoint
+    # records its own labels, and a ResNet trained as Fake/Real orders them
+    # the opposite way round to this module's ("genuine", "suspicious"), so
+    # the column is resolved by name rather than assumed by position. Get
+    # this wrong and every genuine pack scores as counterfeit.
+    _SUSPICIOUS_NAMES = {"fake", "counterfeit", "suspicious", "spurious"}
+
+    def _try_torch(self) -> bool:
+        path = Path(self.cfg.torch_model)
+        if not path.exists():
+            return False
+        try:
+            import torch
+            from torchvision import models
+        except ImportError:
+            log.warning(
+                "A torch checkpoint is present at %s but torch/torchvision "
+                "are not installed; falling back.", path,
+            )
+            return False
+
+        try:
+            ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+            state = ckpt.get("model_state_dict", ckpt)
+            classes = [str(c) for c in ckpt.get("class_names", ["Fake", "Real"])]
+
+            suspicious = [
+                i for i, c in enumerate(classes)
+                if c.strip().lower() in self._SUSPICIOUS_NAMES
+            ]
+            if len(suspicious) != 1:
+                log.error(
+                    "Cannot tell which of %s means 'suspicious'; refusing to "
+                    "guess, because guessing wrong inverts the verdict.",
+                    classes,
+                )
+                return False
+
+            model = models.resnet18(weights=None)
+            in_features = model.fc.in_features
+            model.fc = torch.nn.Sequential(
+                torch.nn.Dropout(p=0.3),
+                torch.nn.Linear(in_features, len(classes)),
+            )
+            model.load_state_dict(state)
+            model.eval()
+            torch.set_num_threads(max(1, (os.cpu_count() or 2) - 1))
+
+            self._torch = model
+            self._torch_classes = classes
+            self._torch_suspicious_index = suspicious[0]
+            return True
+        except Exception as exc:
+            log.warning("Failed to load torch model: %s", exc)
+            return False
+
     # -- inference -------------------------------------------------------
 
     def _prepare(self, image: np.ndarray) -> np.ndarray:
@@ -713,6 +802,26 @@ class VisualAuthenticator:
         raw = self._keras.predict(batch, verbose=0)
         return self._to_suspicion(np.asarray(raw))
 
+    def _infer_torch(self, batch: np.ndarray) -> float:
+        """Score one NHWC [0,1] batch with the ResNet checkpoint.
+
+        `_prepare` produces what the TFLite path wants: NHWC, scaled to
+        [0,1], unnormalised. The torch model was trained on ImageNet-
+        normalised NCHW input, so both conversions happen here rather than
+        changing `_prepare` and disturbing the other backends.
+        """
+        import torch
+
+        arr = np.ascontiguousarray(batch.transpose(0, 3, 1, 2))  # NHWC -> NCHW
+        mean = np.asarray(self.cfg.torch_mean, dtype=np.float32).reshape(1, 3, 1, 1)
+        std = np.asarray(self.cfg.torch_std, dtype=np.float32).reshape(1, 3, 1, 1)
+        arr = (arr - mean) / std
+
+        with torch.no_grad():
+            logits = self._torch(torch.from_numpy(arr.astype(np.float32)))
+            probs = torch.softmax(logits, dim=1)[0]
+        return float(np.clip(probs[self._torch_suspicious_index].item(), 0.0, 1.0))
+
     def _to_suspicion(self, raw: np.ndarray) -> float:
         """Normalise model output to P(suspicious).
 
@@ -744,14 +853,15 @@ class VisualAuthenticator:
         """
         notes: list[str] = []
 
-        if self.backend in ("tflite", "keras"):
+        if self.backend in ("tflite", "keras", "torch"):
             batch = self._prepare(cnn_image)
             try:
-                score = (
-                    self._infer_tflite(batch)
-                    if self.backend == "tflite"
-                    else self._infer_keras(batch)
-                )
+                if self.backend == "tflite":
+                    score = self._infer_tflite(batch)
+                elif self.backend == "keras":
+                    score = self._infer_keras(batch)
+                else:
+                    score = self._infer_torch(batch)
                 label = (
                     "suspicious"
                     if score >= self.cfg.suspicion_threshold

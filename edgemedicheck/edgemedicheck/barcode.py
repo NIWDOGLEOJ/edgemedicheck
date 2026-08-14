@@ -511,12 +511,17 @@ def decode(
     image: np.ndarray,
     try_datamatrix: bool = True,
     max_variants: int = 3,
+    dmtx_timeout_ms: int = 1500,
 ) -> BarcodeResult:
     """Find and decode every symbol on a package image.
 
     Stops as soon as a GS1 code carrying batch or expiry is found, since that
     is the only thing the cross-check needs and further searching only costs
     latency.
+
+    `dmtx_timeout_ms` bounds each DataMatrix search. It is the setting that
+    decides what this stage costs on a pack with no 2D code, because the
+    search then runs to the full timeout on every variant before giving up.
     """
     result = BarcodeResult(decoders_available=available_decoders())
     seen: set[str] = set()
@@ -537,7 +542,7 @@ def decode(
             break
         if collect(_decode_pyzbar(variant)):
             break
-        if try_datamatrix and collect(_decode_dmtx(variant)):
+        if try_datamatrix and collect(_decode_dmtx(variant, dmtx_timeout_ms)):
             break
 
     if not result.codes:

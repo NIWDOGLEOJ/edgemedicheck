@@ -35,11 +35,15 @@ cryptography>=41.0.0
 # QR and common 1D barcodes work out of the box through OpenCV -- no extra
 # install. These add wider coverage:
 #
-#   pyzbar     : broader 1D symbologies.   apt install libzbar0
+#   pyzbar     : broader 1D symbologies.   apt install libzbar0t64
 #                                          pacman -S zbar
 #   pylibdmtx  : GS1 DataMatrix, the code most often used on pharmaceutical
-#                cartons.                  apt install libdmtx0b
+#                cartons.                  apt install libdmtx0t64
 #                                          pacman -S libdmtx
+#
+# The t64 suffix is the 64-bit time_t rename: Debian 13 / Ubuntu 24.04 and
+# newer use libzbar0t64 and libdmtx0t64. On Debian 12 and earlier the names
+# are libzbar0 and libdmtx0b.
 # ---------------------------------------------------------------------------
 # pyzbar>=0.1.9
 # pylibdmtx>=0.1.10

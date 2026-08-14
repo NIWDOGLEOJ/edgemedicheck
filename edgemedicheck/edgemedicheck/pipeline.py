@@ -31,7 +31,7 @@ from .barcode import decode as decode_barcodes
 from .capture import CameraSource, LEDController, capture_scan, find_package_region
 from .cnn import VisualResult, get_authenticator
 from .config import CAPTURE_DIR, CONFIG, Config
-from .fusion import Verdict, fuse
+from .fusion import MIN_SHARPNESS, Verdict, fuse
 from .ocr import OCRResult, run_ocr
 from .preprocess import ProcessedImage, preprocess
 from .statuslight import StatusLight, get_status_light
@@ -211,6 +211,7 @@ def _run_pipeline(
                     processed.deskewed,
                     try_datamatrix=cfg.barcode.try_datamatrix,
                     max_variants=cfg.barcode.max_variants,
+                    dmtx_timeout_ms=cfg.barcode.dmtx_timeout_ms,
                 )
                 crosscheck = cross_check(barcode, ocr.batch_number, ocr.exp_date)
             except Exception as exc:
@@ -271,6 +272,39 @@ def _run_pipeline(
         visual = authenticator.predict(
             processed.cnn_image, processed.deskewed, product_group=product_group
         )
+
+        # A model-backed score is trusted enough to condemn a pack outright,
+        # so it must not come from a frame this pipeline has already judged
+        # inadequate. The classifier cannot abstain: shown an empty counter
+        # it still answers, and on this hardware it answered "counterfeit"
+        # above 0.98 on frames containing no pack at all. Capture quality is
+        # the gate, and it is checked here because this is where the capture
+        # facts live.
+        #
+        # The heuristic backend does not need this: it caps at yellow, and
+        # it already abstains on its own terms when uncalibrated.
+        if visual.is_model_backed:
+            _meta = capture_meta or {}
+            faults = []
+            if not bool(_meta.get("region_ok", True)):
+                faults.append("the package was not fully inside the scan region")
+            if (
+                processed.sharpness is not None
+                and processed.sharpness < MIN_SHARPNESS
+            ):
+                faults.append(
+                    f"the image is blurred (sharpness {processed.sharpness:.0f} "
+                    f"< {MIN_SHARPNESS:.0f})"
+                )
+            if faults:
+                visual.usable = False
+                visual.notes.append(
+                    "Visual authentication abstained because "
+                    + " and ".join(faults)
+                    + ". A pack that was not captured cleanly cannot be "
+                    "judged on appearance; re-scan it. Expiry, batch and "
+                    "barcode checks were still applied."
+                )
 
     # -- Module 6: fusion -------------------------------------------------
     with timer.stage("fusion"):

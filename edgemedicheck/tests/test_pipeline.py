@@ -31,8 +31,9 @@ from edgemedicheck.dateparse import (
     ParsedDate, dates_agree, days_until_expiry, is_expired, parse_date_string,
 )
 from edgemedicheck.fusion import (
-    GREEN, INFO, RED, YELLOW, R_EXPIRED_DB, R_EXPIRED_LABEL, R_NO_MODEL,
-    R_OCR_UNCERTAIN, R_RECALLED, R_UNKNOWN_BATCH, fuse,
+    GREEN, INFO, RED, YELLOW, R_COUNTERFEIT, R_EXPIRED_DB, R_EXPIRED_LABEL,
+    R_NO_MODEL, R_OCR_UNCERTAIN, R_RECALLED, R_UNKNOWN_BATCH,
+    R_VISUAL_ABSTAINED, fuse,
 )
 from edgemedicheck.ocr import OCRField, OCRResult
 
@@ -178,6 +179,35 @@ class TestDatabaseVerification(unittest.TestCase):
                       today=date(2026, 6, 1), db_path=self.db)
         self.assertEqual(r.status, db.MATCH_MISMATCH)
 
+    def test_mismatch_is_reported_when_the_printed_date_is_past(self):
+        """Regression: a label reading *earlier* than the record.
+
+        The record (2027-01-31) is in date, so a printed 2026-05 disagrees
+        with the pharmacy's own data and that disagreement is the finding.
+        Judging the printed date on its own first classified this as an
+        ordinary expiry, which hid the mismatch and reported it under a
+        database code while the database said the batch was fine.
+        """
+        r = db.verify("PC24101", parse_date_string("05/2026", "exp"),
+                      today=date(2026, 6, 1), db_path=self.db)
+        self.assertEqual(r.status, db.MATCH_MISMATCH)
+        self.assertIn("2027-01-31", r.reason)
+
+    def test_past_printed_date_still_expires_without_a_usable_record_date(self):
+        """An unparseable recorded date leaves nothing to disagree with.
+
+        The column is NOT NULL, so the way a record reaches verification
+        with no usable expiry is a malformed value from an imported stock
+        file. The printed date then has to be judged on its own.
+        """
+        db.upsert_product(
+            "NODATE", "Cipla Pharmaceuticals Ltd", "ND00001",
+            exp_date="not-a-date", db_path=self.db,
+        )
+        r = db.verify("ND00001", parse_date_string("05/2026", "exp"),
+                      today=date(2026, 6, 1), db_path=self.db)
+        self.assertEqual(r.status, db.MATCH_EXPIRED)
+
     def test_manufacturer_variation_is_tolerated(self):
         """OCR mangles logo type; near-matches must not raise a hard flag."""
         r = db.verify("PC24101", parse_date_string("01/2027", "exp"),
@@ -305,6 +335,32 @@ class TestFusion(unittest.TestCase):
         v = fuse(make_ocr(), GOOD_LOOKUP, visual(0.95, backend="heuristic"),
                  sharpness=200, brightness=130, today=TODAY)
         self.assertEqual(v.verdict, YELLOW)
+
+    def test_abstained_visual_stream_cannot_condemn_a_pack(self):
+        """A model that declined to judge must not produce a red verdict.
+
+        The classifier answers confidently on frames containing no pack at
+        all, so a score carried forward from a capture the pipeline rejected
+        would reject genuine stock. `usable = False` has to suppress it
+        exactly as it does when no model is loaded.
+        """
+        v = visual(0.99, usable=False, backend="torch")
+        v.notes.append("Visual authentication abstained because the image is blurred.")
+        out = fuse(make_ocr(), GOOD_LOOKUP, v,
+                   sharpness=200, brightness=130, today=TODAY)
+        codes = {f.code for f in out.findings}
+        self.assertNotIn(R_COUNTERFEIT, codes)
+        self.assertNotEqual(out.verdict, RED)
+
+    def test_abstention_is_not_reported_as_a_missing_model(self):
+        """The two reasons to skip the visual check are different facts."""
+        v = visual(0.99, usable=False, backend="torch")
+        v.notes.append("Visual authentication abstained because it is blurred.")
+        out = fuse(make_ocr(), GOOD_LOOKUP, v,
+                   sharpness=200, brightness=130, today=TODAY)
+        codes = {f.code for f in out.findings}
+        self.assertIn(R_VISUAL_ABSTAINED, codes)
+        self.assertNotIn(R_NO_MODEL, codes)
 
     def test_model_backed_high_score_is_red(self):
         v = fuse(make_ocr(), GOOD_LOOKUP, visual(0.95, backend="tflite"),
@@ -972,10 +1028,34 @@ class TestLanAddress(unittest.TestCase):
 
         The UDP route probe fails there, so interface enumeration has to be
         what finds the address.
-        """
-        import subprocess
 
-        real_run = subprocess.run
+        Every route out has to be stubbed, not just the `ip addr` call: on a
+        machine that does have a gateway the probe succeeds and `lan_ip`
+        returns that machine's own address before the fallback under test is
+        ever reached, so the assertion would be checking nothing.
+        """
+        import errno
+        import socket
+        import subprocess
+        from unittest import mock
+
+        class DeadSocket:
+            """A host with no default gateway: every probe is unreachable."""
+
+            def __init__(self, *a, **kw):
+                pass
+
+            def settimeout(self, _):
+                pass
+
+            def connect(self, _):
+                raise OSError(errno.ENETUNREACH, "Network is unreachable")
+
+            def getsockname(self):
+                raise AssertionError("connect() should have raised")
+
+            def close(self):
+                pass
 
         class FakeCompleted:
             stdout = (
@@ -983,11 +1063,36 @@ class TestLanAddress(unittest.TestCase):
                 "2: eth0    inet 192.168.7.31/24 scope global eth0\n"
             )
 
-        subprocess.run = lambda *a, **kw: FakeCompleted()
-        try:
+        with (
+            mock.patch.object(socket, "socket", DeadSocket),
+            mock.patch.object(socket, "getaddrinfo", side_effect=OSError),
+            mock.patch.object(subprocess, "run", return_value=FakeCompleted()),
+        ):
             self.assertEqual(self.run.lan_ip(), "192.168.7.31")
-        finally:
-            subprocess.run = real_run
+
+    def test_route_probe_is_preferred_when_a_gateway_exists(self):
+        """The fallback must not fire when the ordinary probe works."""
+        import socket
+        from unittest import mock
+
+        class LiveSocket:
+            def __init__(self, *a, **kw):
+                pass
+
+            def settimeout(self, _):
+                pass
+
+            def connect(self, _):
+                pass
+
+            def getsockname(self):
+                return ("192.168.4.9", 1)
+
+            def close(self):
+                pass
+
+        with mock.patch.object(socket, "socket", LiveSocket):
+            self.assertEqual(self.run.lan_ip(), "192.168.4.9")
 
 
 # ==========================================================================

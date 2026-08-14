@@ -187,8 +187,18 @@ class OCRConfig:
 class CNNConfig:
     tflite_model: Path = MODEL_DIR / "package_authenticity.tflite"
     keras_model: Path = MODEL_DIR / "package_authenticity.keras"
+    # A torchvision ResNet-18 checkpoint, as produced by
+    # `model training/train_model.py`. Carries its own class_names, which is
+    # what decides which output column means "suspicious" -- see
+    # VisualAuthenticator._infer_torch.
+    torch_model: Path = MODEL_DIR / "package_authenticity.pth"
     labels: tuple[str, ...] = ("genuine", "suspicious")
     input_size: tuple[int, int] = (224, 224)
+    # ImageNet statistics. The torch checkpoint was trained on inputs
+    # normalised with these, so inference has to match or the scores are
+    # meaningless.
+    torch_mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
+    torch_std: tuple[float, float, float] = (0.229, 0.224, 0.225)
     # Suspicion score above this triggers a red "suspected counterfeit".
     suspicion_threshold: float = 0.65
     # Between review_threshold and suspicion_threshold -> yellow.
@@ -216,13 +226,20 @@ class BarcodeConfig:
     DataMatrix decoding is the slowest stage in the whole pipeline, so it is
     bounded by a timeout and can be disabled outright on hardware where the
     3-5 second budget is tight.
+
+    The timeout is the setting that matters on slow hardware, because a pack
+    with no 2D code on it costs the full `dmtx_timeout_ms` on every variant
+    before the search gives up -- measured at 5.9 s of a 13.2 s scan on a
+    Raspberry Pi 4. It is read from the environment so that a counter can be
+    tuned without editing this file; `EMC_BARCODE=0` still turns the stage
+    off outright.
     """
 
     enabled: bool = os.environ.get("EMC_BARCODE", "1") != "0"
     try_datamatrix: bool = True
-    dmtx_timeout_ms: int = 1500
+    dmtx_timeout_ms: int = int(os.environ.get("EMC_DMTX_TIMEOUT_MS", "1500"))
     # How many preprocessed image variants to attempt before giving up.
-    max_variants: int = 3
+    max_variants: int = int(os.environ.get("EMC_BARCODE_MAX_VARIANTS", "3"))
 
 
 @dataclass
