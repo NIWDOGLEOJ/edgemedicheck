@@ -275,9 +275,7 @@ def create_app(
         auth = get_authenticator()
         calib = auth.calibration
         groups = len(calib.groups) if calib else 0
-        visual_ready = bool(
-            auth.is_model_backed if hasattr(auth, "is_model_backed") else False
-        ) or (calib.has_any if calib else False)
+        visual_ready = auth.is_model_backed or (calib.has_any if calib else False)
 
         return render_template(
             "index.html",
@@ -551,7 +549,7 @@ def create_app(
         return jsonify({
             "status": "ok",
             "visual_backend": auth.backend,
-            "model_backed": auth.backend in ("tflite", "keras"),
+            "model_backed": auth.is_model_backed,
             "calibration_groups": sorted(calib.groups) if calib else [],
             "products": db.count_products(db_path),
             "scans": db.scan_stats(db_path)["total_scans"],

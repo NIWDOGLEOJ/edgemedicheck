@@ -139,8 +139,18 @@ class OCRConfig:
 class CNNConfig:
     tflite_model: Path = MODEL_DIR / "package_authenticity.tflite"
     keras_model: Path = MODEL_DIR / "package_authenticity.keras"
+    # A torchvision ResNet-18 checkpoint, as produced by
+    # `model training/train_model.py`. Carries its own class_names, which is
+    # what decides which output column means "suspicious" -- see
+    # VisualAuthenticator._infer_torch.
+    torch_model: Path = MODEL_DIR / "package_authenticity.pth"
     labels: tuple[str, ...] = ("genuine", "suspicious")
     input_size: tuple[int, int] = (224, 224)
+    # ImageNet statistics. The torch checkpoint was trained on inputs
+    # normalised with these, so inference has to match or the scores are
+    # meaningless.
+    torch_mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
+    torch_std: tuple[float, float, float] = (0.229, 0.224, 0.225)
     # Suspicion score above this triggers a red "suspected counterfeit".
     suspicion_threshold: float = 0.65
     # Between review_threshold and suspicion_threshold -> yellow.
