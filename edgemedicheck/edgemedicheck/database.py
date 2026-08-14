@@ -398,9 +398,15 @@ def verify(
       1. No batch read at all              -> unknown
       2. Batch not in database             -> unknown  (NOT counterfeit)
       3. Record carries a regulatory flag  -> unsafe
-      4. Record or label date is past      -> expired
+      4. Record's own date is past         -> expired
       5. Label expiry disagrees with record -> mismatch (tampered label)
-      6. Everything lines up               -> valid
+      6. Label date is past, record agrees -> expired
+      7. Everything lines up               -> valid
+
+    Steps 4-6 are ordered so that the record is consulted before the label.
+    A relabelled carton is only detectable as a disagreement between the
+    two, so the disagreement has to be tested before the printed date is
+    judged in isolation.
     """
     today = today or date.today()
     tolerance = (
@@ -449,7 +455,9 @@ def verify(
 
     db_exp = parse_db_date(record.exp_date, "exp")
 
-    # 4. Expiry, checked against both the database record and the label.
+    # 4. Expiry as the *database* records it. The record is the trusted
+    # source here: it comes from pharmacy stock, invoices and regulatory
+    # alerts, not from a camera pointed at a carton that may be relabelled.
     if record.status == EXPIRED:
         return LookupResult(
             MATCH_EXPIRED,
@@ -467,15 +475,17 @@ def verify(
                 f"(today is {today.isoformat()})."
             ),
         )
-    if exp_date and exp_date.effective < today:
-        return LookupResult(
-            MATCH_EXPIRED,
-            record=record,
-            candidates=len(candidates),
-            reason=f"Printed expiry {exp_date.iso} has passed.",
-        )
 
     # 5. Label vs record disagreement -- the tampered-expiry case.
+    #
+    # This has to be tested before the printed date is judged on its own.
+    # The record has already been shown to be in date, so any disagreement
+    # means the carton does not say what the pharmacy's own records say --
+    # which is the finding, whichever direction the printed date points.
+    # Checking "printed date is past" first would swallow every relabelling
+    # that reads as an earlier date and report it as an ordinary expiry,
+    # hiding the mismatch and blaming a database that said the batch was
+    # fine.
     if exp_date and db_exp and not dates_agree(exp_date, db_exp, tolerance):
         return LookupResult(
             MATCH_MISMATCH,
@@ -485,6 +495,16 @@ def verify(
                 f"Printed expiry {exp_date.iso} does not match the recorded "
                 f"expiry {db_exp.iso} for batch {record.batch_number}."
             ),
+        )
+
+    # 6. Printed date on its own. Reached when the record carries no expiry
+    # to compare against, or when the two agree.
+    if exp_date and exp_date.effective < today:
+        return LookupResult(
+            MATCH_EXPIRED,
+            record=record,
+            candidates=len(candidates),
+            reason=f"Printed expiry {exp_date.iso} has passed.",
         )
 
     # Manufacturer disagreement is reported but does not by itself condemn the

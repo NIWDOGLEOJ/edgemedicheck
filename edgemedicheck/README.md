@@ -202,17 +202,30 @@ reason, and falls back to the OCR value if the encoded one is not on file.
 | Tier | Symbologies | Install |
 |---|---|---|
 | OpenCV | QR, EAN/UPC/Code128 | built in — nothing to install |
-| pyzbar | broader 1D | `pip install pyzbar` + `libzbar0` |
-| pylibdmtx | **GS1 DataMatrix** | `pip install pylibdmtx` + `libdmtx0b` |
+| pyzbar | broader 1D | `pip install pyzbar` + `libzbar0t64` |
+| pylibdmtx | **GS1 DataMatrix** | `pip install pylibdmtx` + `libdmtx0t64` |
 
 OpenCV covers QR codes with no extra system libraries, which keeps the
 Raspberry Pi install simple. DataMatrix is the symbology most often used on
 pharmaceutical cartons, so install `pylibdmtx` where you expect it:
 
 ```bash
-sudo apt install libdmtx0b
+sudo apt install libdmtx0t64
 pip install pylibdmtx
 ```
+
+> **Package names.** Debian 13 (trixie) and Ubuntu 24.04 onwards renamed
+> these libraries for the 64-bit `time_t` transition: `libdmtx0b` became
+> `libdmtx0t64` and `libzbar0` became `libzbar0t64`. Raspberry Pi OS built
+> on trixie carries the new names, and the old ones resolve to nothing. On
+> Debian 12 (bookworm) and earlier, use `libdmtx0b` and `libzbar0`.
+
+> **Latency.** DataMatrix search runs to its full `dmtx_timeout_ms` on every
+> preprocessed variant when the pack carries no 2D code, so enabling
+> `pylibdmtx` costs roughly `dmtx_timeout_ms x max_variants` per scan in
+> that case -- measured at +4.7 s on a Raspberry Pi 4 with the defaults.
+> Lower `dmtx_timeout_ms`, or set `EMC_BARCODE=0`, if you are working with
+> stock that has no DataMatrix on it.
 
 Disable the stage entirely with `EMC_BARCODE=0` if the latency budget is tight
 — DataMatrix search is the slowest step in the pipeline and is bounded by

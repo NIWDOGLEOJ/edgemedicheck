@@ -177,6 +177,35 @@ class TestDatabaseVerification(unittest.TestCase):
                       today=date(2026, 6, 1), db_path=self.db)
         self.assertEqual(r.status, db.MATCH_MISMATCH)
 
+    def test_mismatch_is_reported_when_the_printed_date_is_past(self):
+        """Regression: a label reading *earlier* than the record.
+
+        The record (2027-01-31) is in date, so a printed 2026-05 disagrees
+        with the pharmacy's own data and that disagreement is the finding.
+        Judging the printed date on its own first classified this as an
+        ordinary expiry, which hid the mismatch and reported it under a
+        database code while the database said the batch was fine.
+        """
+        r = db.verify("PC24101", parse_date_string("05/2026", "exp"),
+                      today=date(2026, 6, 1), db_path=self.db)
+        self.assertEqual(r.status, db.MATCH_MISMATCH)
+        self.assertIn("2027-01-31", r.reason)
+
+    def test_past_printed_date_still_expires_without_a_usable_record_date(self):
+        """An unparseable recorded date leaves nothing to disagree with.
+
+        The column is NOT NULL, so the way a record reaches verification
+        with no usable expiry is a malformed value from an imported stock
+        file. The printed date then has to be judged on its own.
+        """
+        db.upsert_product(
+            "NODATE", "Cipla Pharmaceuticals Ltd", "ND00001",
+            exp_date="not-a-date", db_path=self.db,
+        )
+        r = db.verify("ND00001", parse_date_string("05/2026", "exp"),
+                      today=date(2026, 6, 1), db_path=self.db)
+        self.assertEqual(r.status, db.MATCH_EXPIRED)
+
     def test_manufacturer_variation_is_tolerated(self):
         """OCR mangles logo type; near-matches must not raise a hard flag."""
         r = db.verify("PC24101", parse_date_string("01/2027", "exp"),
@@ -971,10 +1000,34 @@ class TestLanAddress(unittest.TestCase):
 
         The UDP route probe fails there, so interface enumeration has to be
         what finds the address.
-        """
-        import subprocess
 
-        real_run = subprocess.run
+        Every route out has to be stubbed, not just the `ip addr` call: on a
+        machine that does have a gateway the probe succeeds and `lan_ip`
+        returns that machine's own address before the fallback under test is
+        ever reached, so the assertion would be checking nothing.
+        """
+        import errno
+        import socket
+        import subprocess
+        from unittest import mock
+
+        class DeadSocket:
+            """A host with no default gateway: every probe is unreachable."""
+
+            def __init__(self, *a, **kw):
+                pass
+
+            def settimeout(self, _):
+                pass
+
+            def connect(self, _):
+                raise OSError(errno.ENETUNREACH, "Network is unreachable")
+
+            def getsockname(self):
+                raise AssertionError("connect() should have raised")
+
+            def close(self):
+                pass
 
         class FakeCompleted:
             stdout = (
@@ -982,11 +1035,36 @@ class TestLanAddress(unittest.TestCase):
                 "2: eth0    inet 192.168.7.31/24 scope global eth0\n"
             )
 
-        subprocess.run = lambda *a, **kw: FakeCompleted()
-        try:
+        with (
+            mock.patch.object(socket, "socket", DeadSocket),
+            mock.patch.object(socket, "getaddrinfo", side_effect=OSError),
+            mock.patch.object(subprocess, "run", return_value=FakeCompleted()),
+        ):
             self.assertEqual(self.run.lan_ip(), "192.168.7.31")
-        finally:
-            subprocess.run = real_run
+
+    def test_route_probe_is_preferred_when_a_gateway_exists(self):
+        """The fallback must not fire when the ordinary probe works."""
+        import socket
+        from unittest import mock
+
+        class LiveSocket:
+            def __init__(self, *a, **kw):
+                pass
+
+            def settimeout(self, _):
+                pass
+
+            def connect(self, _):
+                pass
+
+            def getsockname(self):
+                return ("192.168.4.9", 1)
+
+            def close(self):
+                pass
+
+        with mock.patch.object(socket, "socket", LiveSocket):
+            self.assertEqual(self.run.lan_ip(), "192.168.4.9")
 
 
 # ==========================================================================
