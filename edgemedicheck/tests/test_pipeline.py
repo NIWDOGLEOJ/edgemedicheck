@@ -30,8 +30,9 @@ from edgemedicheck.dateparse import (
     ParsedDate, dates_agree, days_until_expiry, is_expired, parse_date_string,
 )
 from edgemedicheck.fusion import (
-    GREEN, INFO, RED, YELLOW, R_EXPIRED_DB, R_EXPIRED_LABEL, R_NO_MODEL,
-    R_OCR_UNCERTAIN, R_RECALLED, R_UNKNOWN_BATCH, fuse,
+    GREEN, INFO, RED, YELLOW, R_COUNTERFEIT, R_EXPIRED_DB, R_EXPIRED_LABEL,
+    R_NO_MODEL, R_OCR_UNCERTAIN, R_RECALLED, R_UNKNOWN_BATCH,
+    R_VISUAL_ABSTAINED, fuse,
 )
 from edgemedicheck.ocr import OCRField, OCRResult
 
@@ -333,6 +334,32 @@ class TestFusion(unittest.TestCase):
         v = fuse(make_ocr(), GOOD_LOOKUP, visual(0.95, backend="heuristic"),
                  sharpness=200, brightness=130, today=TODAY)
         self.assertEqual(v.verdict, YELLOW)
+
+    def test_abstained_visual_stream_cannot_condemn_a_pack(self):
+        """A model that declined to judge must not produce a red verdict.
+
+        The classifier answers confidently on frames containing no pack at
+        all, so a score carried forward from a capture the pipeline rejected
+        would reject genuine stock. `usable = False` has to suppress it
+        exactly as it does when no model is loaded.
+        """
+        v = visual(0.99, usable=False, backend="torch")
+        v.notes.append("Visual authentication abstained because the image is blurred.")
+        out = fuse(make_ocr(), GOOD_LOOKUP, v,
+                   sharpness=200, brightness=130, today=TODAY)
+        codes = {f.code for f in out.findings}
+        self.assertNotIn(R_COUNTERFEIT, codes)
+        self.assertNotEqual(out.verdict, RED)
+
+    def test_abstention_is_not_reported_as_a_missing_model(self):
+        """The two reasons to skip the visual check are different facts."""
+        v = visual(0.99, usable=False, backend="torch")
+        v.notes.append("Visual authentication abstained because it is blurred.")
+        out = fuse(make_ocr(), GOOD_LOOKUP, v,
+                   sharpness=200, brightness=130, today=TODAY)
+        codes = {f.code for f in out.findings}
+        self.assertIn(R_VISUAL_ABSTAINED, codes)
+        self.assertNotIn(R_NO_MODEL, codes)
 
     def test_model_backed_high_score_is_red(self):
         v = fuse(make_ocr(), GOOD_LOOKUP, visual(0.95, backend="tflite"),
