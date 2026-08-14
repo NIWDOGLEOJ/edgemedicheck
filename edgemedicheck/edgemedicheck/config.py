@@ -168,13 +168,20 @@ class BarcodeConfig:
     DataMatrix decoding is the slowest stage in the whole pipeline, so it is
     bounded by a timeout and can be disabled outright on hardware where the
     3-5 second budget is tight.
+
+    The timeout is the setting that matters on slow hardware, because a pack
+    with no 2D code on it costs the full `dmtx_timeout_ms` on every variant
+    before the search gives up -- measured at 5.9 s of a 13.2 s scan on a
+    Raspberry Pi 4. It is read from the environment so that a counter can be
+    tuned without editing this file; `EMC_BARCODE=0` still turns the stage
+    off outright.
     """
 
     enabled: bool = os.environ.get("EMC_BARCODE", "1") != "0"
     try_datamatrix: bool = True
-    dmtx_timeout_ms: int = 1500
+    dmtx_timeout_ms: int = int(os.environ.get("EMC_DMTX_TIMEOUT_MS", "1500"))
     # How many preprocessed image variants to attempt before giving up.
-    max_variants: int = 3
+    max_variants: int = int(os.environ.get("EMC_BARCODE_MAX_VARIANTS", "3"))
 
 
 @dataclass

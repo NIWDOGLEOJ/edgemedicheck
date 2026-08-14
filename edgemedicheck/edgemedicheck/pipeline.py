@@ -181,6 +181,7 @@ def scan_image(
                     processed.deskewed,
                     try_datamatrix=cfg.barcode.try_datamatrix,
                     max_variants=cfg.barcode.max_variants,
+                    dmtx_timeout_ms=cfg.barcode.dmtx_timeout_ms,
                 )
                 crosscheck = cross_check(barcode, ocr.batch_number, ocr.exp_date)
             except Exception as exc:

@@ -452,6 +452,14 @@ Everything tunable lives in `edgemedicheck/config.py`. Environment overrides:
 | `EMC_CAPTURE_BACKEND` | `auto` / `picamera` / `webcam` / `folder` |
 | `EMC_TESSERACT_CMD` | Path to the tesseract binary (Windows) |
 | `EMC_HOST`, `EMC_PORT` | Web interface bind address |
+| `EMC_BARCODE` | `0` disables the barcode stage entirely |
+| `EMC_DMTX_TIMEOUT_MS` | DataMatrix search budget per variant (default 1500) |
+| `EMC_BARCODE_MAX_VARIANTS` | Preprocessed variants to try before giving up (default 3) |
+
+A pack with no 2D code costs `EMC_DMTX_TIMEOUT_MS x EMC_BARCODE_MAX_VARIANTS`
+before the search gives up, so on a Raspberry Pi the default 1500 ms turns a
+6.7 s scan into a 13.2 s one. Lower it where the stock you handle does not
+carry DataMatrix.
 
 ---
 
